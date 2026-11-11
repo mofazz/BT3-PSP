@@ -1,0 +1,632 @@
+diff --git a/source/custom_shaders.c b/source/custom_shaders.c
+index 3b91d11..682f460 100644
+--- a/source/custom_shaders.c
++++ b/source/custom_shaders.c
+@@ -218,11 +218,11 @@ char vgl_file_cache_path[256];
+ 	}
+ #endif
+ 	
++/* bt3 port: a program drawn with a few blend settings in turn asked the shader patcher for its fragment program
++   again at every change (a hash look-up and more, many times a picture); the ones made are kept with the program */
+ #define setup_frag_program() \
+ 	if ((p->blend_info.raw != blend_info.raw) || (is_fbo_float != p->is_fbo_float)) { \
+-		p->is_fbo_float = is_fbo_float; \
+-		p->blend_info.raw = blend_info.raw; \
+-		rebuild_frag_shader(p->fshader->id, &p->fprog, (SceGxmProgram *)p->vshader->prog, is_fbo_float ? SCE_GXM_OUTPUT_REGISTER_FORMAT_HALF4 : SCE_GXM_OUTPUT_REGISTER_FORMAT_UCHAR4); \
++		bt3_frag_select(p); \
+ 	} \
+ 	sceGxmSetFragmentProgram(gxm_context, p->fprog);
+ 	
+@@ -372,6 +372,11 @@ typedef struct {
+ #if defined(HAVE_VERTEX_LAYOUT_CACHE) && !defined(STRICT_DRAW_COMPLIANCE) && !defined(DRAW_SPEEDHACK)
+ 	uint32_t vertex_layout_version;
+ #endif
++	/* bt3 port: the fragment programs made for this program, by blend settings and output format */
++	uint32_t bt3_fkey[8];
++	SceGxmFragmentProgram *bt3_fprog[8];
++	uint8_t bt3_fflt[8];
++	uint8_t bt3_fn, bt3_fnext;
+ } program;
+ 
+ #if defined(HAVE_VERTEX_LAYOUT_CACHE) && !defined(STRICT_DRAW_COMPLIANCE) && !defined(DRAW_SPEEDHACK)
+@@ -395,15 +400,40 @@ typedef struct {
+ 	SceGxmVertexProgram *vprog;
+ } vertex_layout_cache_entry;
+ 
+-#define VERTEX_LAYOUT_CACHE_ENTRIES 4
++/* bt3 port: 32 places (were 4), and a vertex array's layout numbered by what it is, not by how often it changed: the
++   port draws with a few layouts in turn (the GS's primitives, the stage, the fighters, the kept parts), and with a new
++   number at every change no layout was ever found again: every draw after a change asked the shader patcher for the
++   vertex program again */
++#define VERTEX_LAYOUT_CACHE_ENTRIES 32
+ static uint32_t vertex_program_layout_current_ver = 0;
+ static vertex_layout_cache_entry vertex_layout_cache[VERTEX_LAYOUT_CACHE_ENTRIES] = {};
+ static uint8_t vertex_layout_cache_id = 0;
++unsigned vgl_bt3_layout_hits, vgl_bt3_layout_misses;
++static uint32_t bt3_vao_hash(vao *v) {
++	uint32_t h = 2166136261u;
++#define BT3H(x) h = (h ^ (uint32_t)(x)) * 16777619u
++	BT3H(v->vertex_attrib_state);
++	BT3H(v->vertex_attrib_divisor);
++	for (int i = 0; i < VERTEX_ATTRIBS_NUM; i++) {
++		BT3H(v->vertex_attrib_offsets[i]);
++		BT3H(v->vertex_attrib_vbo[i]);
++		BT3H((uint32_t)v->vertex_attrib_config[i].format | (uint32_t)v->vertex_attrib_config[i].componentCount << 8 | (uint32_t)v->vertex_attrib_size[i] << 16);
++		BT3H(v->vertex_stream_config[i].stride);
++	}
++#undef BT3H
++	return h | 0x80000000u; /* (never 0, never one of the small numbers new arrays start with) */
++}
++static inline __attribute__((always_inline)) void bt3_vao_version(void) {
++	if (cur_vao->vertex_layout_version == 0)
++		cur_vao->vertex_layout_version = bt3_vao_hash(cur_vao);
++}
+ 
+ static inline __attribute__((always_inline)) vertex_layout_cache_entry *vertex_layout_lookup(program *p, uint8_t type, uint8_t variant) {
++	bt3_vao_version();
+ 	for (uint32_t i = 0; i < VERTEX_LAYOUT_CACHE_ENTRIES; i++) {
+ 		vertex_layout_cache_entry *entry = &vertex_layout_cache[i];
+ 		if (entry->prog == p && entry->vao == cur_vao && entry->type == type && entry->prog_version == p->vertex_layout_version && entry->vao_version == cur_vao->vertex_layout_version && entry->variant == variant) {
++			vgl_bt3_layout_hits++;
+ 			return entry;
+ 		}
+ 	}
+@@ -411,9 +441,11 @@ static inline __attribute__((always_inline)) vertex_layout_cache_entry *vertex_l
+ }
+ 
+ static inline __attribute__((always_inline)) vertex_layout_cache_entry *vertex_layout_lookup_simple(program *p, uint8_t type) {
++	bt3_vao_version();
+ 	for (uint32_t i = 0; i < VERTEX_LAYOUT_CACHE_ENTRIES; i++) {
+ 		vertex_layout_cache_entry *entry = &vertex_layout_cache[i];
+ 		if (entry->prog == p && entry->vao == cur_vao && entry->type == type && entry->prog_version == p->vertex_layout_version && entry->vao_version == cur_vao->vertex_layout_version) {
++			vgl_bt3_layout_hits++;
+ 			return entry;
+ 		}
+ 	}
+@@ -424,6 +456,8 @@ static inline __attribute__((always_inline)) void vertex_layout_cache_insert(pro
+ 	GLboolean is_packed, GLboolean is_full_vbo, const SceGxmVertexAttribute *attributes, const SceGxmVertexStream *streams) {
+ 	vertex_layout_cache_entry *entry = &vertex_layout_cache[vertex_layout_cache_id];
+ 	vertex_layout_cache_id = (vertex_layout_cache_id + 1) & (VERTEX_LAYOUT_CACHE_ENTRIES - 1);
++	vgl_bt3_layout_misses++;
++	bt3_vao_version();
+ 	entry->prog = p;
+ 	entry->vao = cur_vao;
+ 	entry->prog_version = p->vertex_layout_version;
+@@ -490,6 +524,33 @@ static inline __attribute__((always_inline)) void vertex_layout_setup_ptrs(progr
+ static shader *shaders[MAX_CUSTOM_SHADERS];
+ static program progs[MAX_CUSTOM_PROGRAMS];
+ 
++/* bt3 port (see setup_frag_program) */
++unsigned vgl_bt3_frag_patches, vgl_bt3_frag_hits, vgl_bt3_frag_us;
++static void bt3_frag_select(program *p) {
++	int i, k;
++	for (i = 0; i < p->bt3_fn; i++) {
++		if (p->bt3_fkey[i] == blend_info.raw && p->bt3_fflt[i] == (uint8_t)is_fbo_float) {
++			p->fprog = p->bt3_fprog[i];
++			p->is_fbo_float = is_fbo_float;
++			p->blend_info.raw = blend_info.raw;
++			vgl_bt3_frag_hits++;
++			return;
++		}
++	}
++	{
++		uint32_t t0 = sceKernelGetProcessTimeLow();
++		p->is_fbo_float = is_fbo_float;
++		p->blend_info.raw = blend_info.raw;
++		rebuild_frag_shader(p->fshader->id, &p->fprog, (SceGxmProgram *)p->vshader->prog, is_fbo_float ? SCE_GXM_OUTPUT_REGISTER_FORMAT_HALF4 : SCE_GXM_OUTPUT_REGISTER_FORMAT_UCHAR4);
++		vgl_bt3_frag_us += sceKernelGetProcessTimeLow() - t0;
++		vgl_bt3_frag_patches++;
++	}
++	k = p->bt3_fn < 8 ? p->bt3_fn++ : (p->bt3_fnext++ & 7);
++	p->bt3_fkey[k] = blend_info.raw;
++	p->bt3_fflt[k] = (uint8_t)is_fbo_float;
++	p->bt3_fprog[k] = p->fprog;
++}
++
+ #ifdef HAVE_SHARK_LOG
+ static char *shark_log = NULL;
+ #endif
+@@ -1345,9 +1406,12 @@ GLboolean _glDrawElements_CustomShadersIMPL(uint16_t *idx_buf, GLsizei count, ui
+ 	uint32_t draw_start = sceKernelGetProcessTimeLow();
+ #endif
+ 	program *p = &progs[cur_program - 1];
++	extern uint64_t vgl_dbg_time[8];
++	uint64_t ct0 = sceKernelGetProcessTimeWide();
+ 
+ 	// Check if a blend info rebuild is required and upload fragment program
+ 	setup_frag_program();
++	vgl_dbg_time[4] += sceKernelGetProcessTimeWide() - ct0;
+ 
+ 	// Uploading fragment textures on relative texture units
+ 	for (int i = 0; i < p->max_frag_texunit_idx; i++) {
+@@ -1464,7 +1528,10 @@ GLboolean _glDrawElements_CustomShadersIMPL(uint16_t *idx_buf, GLsizei count, ui
+ 			vertex_layout_setup_ptrs(p, layout_entry->is_packed, 0, top_idx, top_idx, ptrs);
+ 			p->vprog = layout_entry->vprog;
+ 			sceGxmSetVertexProgram(gxm_context, p->vprog);
++			uint64_t ct1 = sceKernelGetProcessTimeWide();
+ 			upload_uniforms();
++			vgl_dbg_time[5] += sceKernelGetProcessTimeWide() - ct1;
++			vgl_dbg_time[6]++;
+ 			for (int i = 0; i < p->attr_num; i++) {
+ 				uint8_t attr_idx = p->attr_map[i];
+ 				if (cur_vao->vertex_attrib_state & (1 << attr_idx)) {
+@@ -2149,6 +2216,8 @@ GLuint glCreateProgram(void) {
+ 			progs[i].num_glsl_attr = 0;
+ 			progs[i].glsl_attr_map = NULL;
+ 			progs[i].is_fbo_float = 0xFF;
++			progs[i].bt3_fn = 0;
++			progs[i].bt3_fnext = 0;
+ 			for (j = 0; j < VERTEX_ATTRIBS_NUM; j++) {
+ 				progs[i].attr[j].regIndex = 0xDEAD;
+ 			}
+@@ -2451,6 +2520,8 @@ void glLinkProgram(GLuint progr) {
+ 		return;
+ 	}
+ 	p->status = PROG_LINKED;
++	p->bt3_fn = 0; /* (bt3 port: the fragment programs made before linking are not this one's) */
++	p->is_fbo_float = 0xFF;
+ 	
+ 	// Set up uniform buffers
+ 	if (p->vshader->unif_buf_size) {
+@@ -3197,7 +3268,7 @@ void glEnableVertexAttribArray(GLuint index) {
+ 	uint32_t bit = 1 << index;
+ 	if (!(cur_vao->vertex_attrib_state & bit)) {
+ 		cur_vao->vertex_attrib_state |= bit;
+-		cur_vao->vertex_layout_version = ++vertex_layout_cur_ver;
++		cur_vao->vertex_layout_version = 0; /* (bt3 port: worked out from the attributes when next looked up) */
+ 	}
+ #else
+ 	cur_vao->vertex_attrib_state |= (1 << index);
+@@ -3216,7 +3287,7 @@ void glDisableVertexAttribArray(GLuint index) {
+ 	uint32_t bit = 1 << index;
+ 	if (cur_vao->vertex_attrib_state & bit) {
+ 		cur_vao->vertex_attrib_state &= ~bit;
+-		cur_vao->vertex_layout_version = ++vertex_layout_cur_ver;
++		cur_vao->vertex_layout_version = 0; /* (bt3 port: worked out from the attributes when next looked up) */
+ 	}
+ #else
+ 	cur_vao->vertex_attrib_state &= ~(1 << index);
+@@ -3296,7 +3367,7 @@ void glVertexAttribPointer(GLuint index, GLint size, GLenum type, GLboolean norm
+ 	streams->stride = stride ? stride : bpe * size;
+ #if defined(HAVE_VERTEX_LAYOUT_CACHE) && !defined(STRICT_DRAW_COMPLIANCE) && !defined(DRAW_SPEEDHACK)
+ 	if (old_offset != cur_vao->vertex_attrib_offsets[index] || old_vbo != cur_vao->vertex_attrib_vbo[index] || old_format != attributes->format || old_component_count != attributes->componentCount || old_stride != streams->stride) {
+-		cur_vao->vertex_layout_version = ++vertex_layout_cur_ver;
++		cur_vao->vertex_layout_version = 0; /* (bt3 port: worked out from the attributes when next looked up) */
+ 	}
+ #endif
+ }
+@@ -3318,11 +3389,11 @@ void glVertexAttribDivisor(GLuint index, GLuint divisor) {
+ 	if (divisor) {
+ 		if (!(cur_vao->vertex_attrib_divisor & bit)) {
+ 			cur_vao->vertex_attrib_divisor |= bit;
+-			cur_vao->vertex_layout_version = ++vertex_layout_cur_ver;
++			cur_vao->vertex_layout_version = 0; /* (bt3 port: worked out from the attributes when next looked up) */
+ 		}
+ 	} else if (cur_vao->vertex_attrib_divisor & bit) {
+ 		cur_vao->vertex_attrib_divisor &= ~bit;
+-		cur_vao->vertex_layout_version = ++vertex_layout_cur_ver;
++		cur_vao->vertex_layout_version = 0; /* (bt3 port: worked out from the attributes when next looked up) */
+ 	}
+ #else
+ 	if (divisor) {
+@@ -3424,7 +3495,7 @@ void glVertexAttrib1f(GLuint index, GLfloat v0) {
+ 
+ #if defined(HAVE_VERTEX_LAYOUT_CACHE) && !defined(STRICT_DRAW_COMPLIANCE) && !defined(DRAW_SPEEDHACK)
+ 	if (cur_vao->vertex_attrib_size[index] != 1) {
+-		cur_vao->vertex_layout_version = ++vertex_layout_cur_ver;
++		cur_vao->vertex_layout_version = 0; /* (bt3 port: worked out from the attributes when next looked up) */
+ 	}
+ #endif
+ 	cur_vao->vertex_attrib_value[index] = reserve_attrib_pool(1);
+@@ -3437,7 +3508,7 @@ void glVertexAttrib2f(GLuint index, GLfloat v0, GLfloat v1) {
+ 
+ #if defined(HAVE_VERTEX_LAYOUT_CACHE) && !defined(STRICT_DRAW_COMPLIANCE) && !defined(DRAW_SPEEDHACK)
+ 	if (cur_vao->vertex_attrib_size[index] != 2) {
+-		cur_vao->vertex_layout_version = ++vertex_layout_cur_ver;
++		cur_vao->vertex_layout_version = 0; /* (bt3 port: worked out from the attributes when next looked up) */
+ 	}
+ #endif
+ 	cur_vao->vertex_attrib_value[index] = reserve_attrib_pool(2);
+@@ -3451,7 +3522,7 @@ void glVertexAttrib3f(GLuint index, GLfloat v0, GLfloat v1, GLfloat v2) {
+ 
+ #if defined(HAVE_VERTEX_LAYOUT_CACHE) && !defined(STRICT_DRAW_COMPLIANCE) && !defined(DRAW_SPEEDHACK)
+ 	if (cur_vao->vertex_attrib_size[index] != 3) {
+-		cur_vao->vertex_layout_version = ++vertex_layout_cur_ver;
++		cur_vao->vertex_layout_version = 0; /* (bt3 port: worked out from the attributes when next looked up) */
+ 	}
+ #endif
+ 	cur_vao->vertex_attrib_value[index] = reserve_attrib_pool(3);
+@@ -3466,7 +3537,7 @@ void glVertexAttrib4f(GLuint index, GLfloat v0, GLfloat v1, GLfloat v2, GLfloat
+ 
+ #if defined(HAVE_VERTEX_LAYOUT_CACHE) && !defined(STRICT_DRAW_COMPLIANCE) && !defined(DRAW_SPEEDHACK)
+ 	if (cur_vao->vertex_attrib_size[index] != 4) {
+-		cur_vao->vertex_layout_version = ++vertex_layout_cur_ver;
++		cur_vao->vertex_layout_version = 0; /* (bt3 port: worked out from the attributes when next looked up) */
+ 	}
+ #endif
+ 	cur_vao->vertex_attrib_value[index] = reserve_attrib_pool(4);
+@@ -3482,7 +3553,7 @@ void glVertexAttrib1fv(GLuint index, const GLfloat *v) {
+ 
+ #if defined(HAVE_VERTEX_LAYOUT_CACHE) && !defined(STRICT_DRAW_COMPLIANCE) && !defined(DRAW_SPEEDHACK)
+ 	if (cur_vao->vertex_attrib_size[index] != 1) {
+-		cur_vao->vertex_layout_version = ++vertex_layout_cur_ver;
++		cur_vao->vertex_layout_version = 0; /* (bt3 port: worked out from the attributes when next looked up) */
+ 	}
+ #endif
+ 	cur_vao->vertex_attrib_value[index] = reserve_attrib_pool(1);
+@@ -3495,7 +3566,7 @@ void glVertexAttrib2fv(GLuint index, const GLfloat *v) {
+ 
+ #if defined(HAVE_VERTEX_LAYOUT_CACHE) && !defined(STRICT_DRAW_COMPLIANCE) && !defined(DRAW_SPEEDHACK)
+ 	if (cur_vao->vertex_attrib_size[index] != 2) {
+-		cur_vao->vertex_layout_version = ++vertex_layout_cur_ver;
++		cur_vao->vertex_layout_version = 0; /* (bt3 port: worked out from the attributes when next looked up) */
+ 	}
+ #endif
+ 	cur_vao->vertex_attrib_value[index] = reserve_attrib_pool(2);
+@@ -3509,7 +3580,7 @@ void glVertexAttrib3fv(GLuint index, const GLfloat *v) {
+ 
+ #if defined(HAVE_VERTEX_LAYOUT_CACHE) && !defined(STRICT_DRAW_COMPLIANCE) && !defined(DRAW_SPEEDHACK)
+ 	if (cur_vao->vertex_attrib_size[index] != 3) {
+-		cur_vao->vertex_layout_version = ++vertex_layout_cur_ver;
++		cur_vao->vertex_layout_version = 0; /* (bt3 port: worked out from the attributes when next looked up) */
+ 	}
+ #endif
+ 	cur_vao->vertex_attrib_value[index] = reserve_attrib_pool(3);
+@@ -3524,7 +3595,7 @@ void glVertexAttrib4fv(GLuint index, const GLfloat *v) {
+ 
+ #if defined(HAVE_VERTEX_LAYOUT_CACHE) && !defined(STRICT_DRAW_COMPLIANCE) && !defined(DRAW_SPEEDHACK)
+ 	if (cur_vao->vertex_attrib_size[index] != 4) {
+-		cur_vao->vertex_layout_version = ++vertex_layout_cur_ver;
++		cur_vao->vertex_layout_version = 0; /* (bt3 port: worked out from the attributes when next looked up) */
+ 	}
+ #endif
+ 	cur_vao->vertex_attrib_value[index] = reserve_attrib_pool(4);
+@@ -3972,3 +4043,55 @@ void vglShaderGxpBinary(GLsizei count, const GLuint *handles, const void *binary
+ 	sceGxmShaderPatcherRegisterProgram(gxm_shader_patcher, s->prog, &s->id);
+ 	s->unif_buf_size = sceGxmProgramGetDefaultUniformBufferSize(s->prog);
+ }
++
++/* ---- bt3 port (Tenkaichi3Decomp): many draws with the current program and state, each with its own vertex
++   uniforms (the whole default uniform block) and its own indices, kept in the bound element array buffer ---- */
++GLboolean vglFastPrepare(GLenum type) {
++	if (cur_program == 0)
++		return GL_FALSE;
++	vbo *gpu_buf = (vbo *)cur_vao->index_array_unit;
++	if (!gpu_buf)
++		return GL_FALSE;
++	scene_reset();
++	dirty_shader_vert_unifs = GL_TRUE;
++	GLboolean r = _glDrawElements_CustomShadersIMPL((uint16_t *)gpu_buf->ptr, 3, 0, 0, type == GL_UNSIGNED_INT ? SCE_GXM_INDEX_SOURCE_INDEX_32BIT : SCE_GXM_INDEX_SOURCE_INDEX_16BIT);
++	gpu_buf->last_frame = vgl_framecount;
++	return r;
++}
++
++void vglFastDraw(GLenum type, uint32_t offset, uint32_t count, const void *vunif, uint32_t size) {
++	vbo *gpu_buf = (vbo *)cur_vao->index_array_unit;
++	void *buffer = vglReserveVertexUniformBuffer(size);
++	vgl_fast_memcpy(buffer, vunif, size);
++	sceGxmDraw(gxm_context, SCE_GXM_PRIMITIVE_TRIANGLES, type == GL_UNSIGNED_INT ? SCE_GXM_INDEX_FORMAT_U32 : SCE_GXM_INDEX_FORMAT_U16, (uint8_t *)gpu_buf->ptr + offset, count);
++	dirty_shader_vert_unifs = GL_TRUE;
++}
++
++void vglFastDrawPtr(GLenum type, const void *idx, uint32_t count, const void *vunif, uint32_t size) {
++	void *buffer = vglReserveVertexUniformBuffer(size);
++	vgl_fast_memcpy(buffer, vunif, size);
++	sceGxmDraw(gxm_context, SCE_GXM_PRIMITIVE_TRIANGLES, type == GL_UNSIGNED_INT ? SCE_GXM_INDEX_FORMAT_U32 : SCE_GXM_INDEX_FORMAT_U16, idx, count);
++	dirty_shader_vert_unifs = GL_TRUE;
++}
++
++uint32_t vglFastVertUniformSize(GLuint prog) {
++	if (prog == 0)
++		return 0;
++	program *p = &progs[prog - 1];
++	return p->vshader ? p->vshader->unif_buf_size : 0;
++}
++
++int vglFastUniformOffset(GLuint prog, GLint location) {
++	if (location == -1 || location == 0 || prog == 0)
++		return -1;
++	program *p = &progs[prog - 1];
++#ifdef STRICT_UNIFORMS_COMPLIANCE
++	uint32_t offs = 0;
++	uniform *u = (uniform *)get_uniform_from_ptr(location, &offs);
++#else
++	uniform *u = (uniform *)get_uniform_from_ptr(location, NULL);
++#endif
++	if (!u->vptr || !p->unif_vbuffer)
++		return -1;
++	return (int)((uint8_t *)u->vptr - (uint8_t *)p->unif_vbuffer);
++}
+diff --git a/source/draw.c b/source/draw.c
+index e9e6c8c..c15b2ff 100644
+--- a/source/draw.c
++++ b/source/draw.c
+@@ -328,6 +328,7 @@ void glDrawArraysInstanced(GLenum mode, GLint first, GLsizei count, GLsizei prim
+ 	restore_polygon_mode(gxm_p);
+ }
+ 
++uint64_t vgl_dbg_time[8]; /* (bt3 port: microseconds in the draw call by part: shader setup, indices, sceGxmDraw, calls; then 4..6 inside the shader setup) */
+ void glDrawElements(GLenum mode, GLsizei count, GLenum type, const GLvoid *gl_indices) {
+ 	THREAD_SAFE()
+ 
+@@ -364,6 +365,7 @@ void glDrawElements(GLenum mode, GLsizei count, GLenum type, const GLvoid *gl_in
+ 		src = idx16;
+ 	}
+ 	
++	uint64_t vt0 = sceKernelGetProcessTimeWide();
+ 	if (cur_program != 0)
+ 		is_draw_legal = _glDrawElements_CustomShadersIMPL(src, count, 0, 0, type != GL_UNSIGNED_INT ? SCE_GXM_INDEX_SOURCE_INDEX_16BIT : SCE_GXM_INDEX_SOURCE_INDEX_32BIT);
+ 	else {
+@@ -371,6 +373,8 @@ void glDrawElements(GLenum mode, GLsizei count, GLenum type, const GLvoid *gl_in
+ 			return;
+ 		_glDrawElements_FixedFunctionIMPL(src, count, 0, 0, type != GL_UNSIGNED_INT ? SCE_GXM_INDEX_SOURCE_INDEX_16BIT : SCE_GXM_INDEX_SOURCE_INDEX_32BIT);
+ 	}
++	uint64_t vt1 = sceKernelGetProcessTimeWide();
++	vgl_dbg_time[0] += vt1 - vt0;
+ 
+ #ifndef SKIP_ERROR_HANDLING
+ 	if (is_draw_legal)
+@@ -378,7 +382,11 @@ void glDrawElements(GLenum mode, GLsizei count, GLenum type, const GLvoid *gl_in
+ 	{
+ 		if (type == GL_UNSIGNED_SHORT) {
+ 			setup_elements_indices(uint16_t);
++			uint64_t vt2 = sceKernelGetProcessTimeWide();
++			vgl_dbg_time[1] += vt2 - vt1;
+ 			sceGxmDraw(gxm_context, gxm_p, SCE_GXM_INDEX_FORMAT_U16, ptr, count);
++			vgl_dbg_time[2] += sceKernelGetProcessTimeWide() - vt2;
++			vgl_dbg_time[3]++;
+ 		} else if (type == GL_UNSIGNED_INT) {
+ 			setup_elements_indices(uint32_t);
+ 			sceGxmDraw(gxm_context, gxm_p, SCE_GXM_INDEX_FORMAT_U32, ptr, count);
+diff --git a/source/gxm.c b/source/gxm.c
+index ffa0279..76d6495 100644
+--- a/source/gxm.c
++++ b/source/gxm.c
+@@ -241,6 +241,14 @@ static void shader_patcher_host_free_cb(void *user_data, void *mem) {
+ 	vgl_free(mem);
+ }
+ 
++uint32_t vgl_flip_hist[5]; // bt3 port: pictures shown for 0 (same blank), 1, 2, 3, 4+ blanks
++// bt3 port: the display may change its size between the menus (960 x 544) and the fights (640 x 368) without new
++// memory: the colour buffers and the depth / stencil buffer are made once for the largest size and described again
++// for the size asked for (vglSwapResolution). Each queued buffer keeps the size it was drawn at.
++static void *bt3_buf_addr[3];
++static int bt3_buf_w[3], bt3_buf_h[3];
++static uint32_t bt3_color_bytes;  // what each colour buffer holds (made at the first size)
++static uint32_t bt3_depth_samples; // what the depth buffer holds
+ // sceDisplay callback
+ static void display_queue_callback(const void *callbackData) {
+ 	// Populating sceDisplay framebuffer parameters
+@@ -253,6 +261,14 @@ static void display_queue_callback(const void *callbackData) {
+ 	display_fb.pixelformat = SCE_DISPLAY_PIXELFORMAT_A8B8G8R8;
+ 	display_fb.width = DISPLAY_WIDTH;
+ 	display_fb.height = DISPLAY_HEIGHT;
++	// bt3 port: the size the buffer was drawn at (the display size may have changed since it was queued)
++	for (int i = 0; i < 3; i++) {
++		if (bt3_buf_addr[i] == cb_data->addr && bt3_buf_w[i] > 0) {
++			display_fb.pitch = VGL_ALIGN(bt3_buf_w[i], 64);
++			display_fb.width = bt3_buf_w[i];
++			display_fb.height = bt3_buf_h[i];
++		}
++	}
+ 
+ #ifdef HAVE_DEBUG_INTERFACE
+ 	// Drawing lightweighted debugger info
+@@ -262,6 +278,17 @@ static void display_queue_callback(const void *callbackData) {
+ 	if (vgl_display_cb)
+ 		vgl_display_cb(cb_data->addr);
+ 
++	// bt3 port: how many vertical blanks each picture stayed on the screen (1, 2, 3, 4 or more)
++	{
++		static uint32_t last_vc;
++		uint32_t vc = (uint32_t)sceDisplayGetVcount();
++		if (last_vc != 0) {
++			uint32_t d = vc - last_vc;
++			vgl_flip_hist[d >= 4 ? 4 : d]++;
++		}
++		last_vc = vc;
++	}
++
+ 	// Setting sceDisplay framebuffer
+ 	sceDisplaySetFrameBuf(&display_fb, SCE_DISPLAY_SETBUF_NEXTFRAME);
+ 
+@@ -464,6 +491,7 @@ void init_display_color_surfaces(GLboolean is_swap) {
+ 		if (!system_app_mode) {
+ 			gxm_color_surfaces_addr[i] = gpu_alloc_mapped_aligned_for_gpu(4096, VGL_ALIGN(4 * DISPLAY_STRIDE * DISPLAY_HEIGHT, 1 * 1024 * 1024));
+ 			vgl_memset(gxm_color_surfaces_addr[i], 0, 4 * DISPLAY_STRIDE * DISPLAY_HEIGHT);
++			bt3_color_bytes = 4 * DISPLAY_STRIDE * DISPLAY_HEIGHT; // bt3 port
+ 		}
+ 
+ 		// Initializing allocated color surface
+@@ -528,6 +556,7 @@ void init_depth_stencil_buffer(uint32_t w, uint32_t h, SceGxmDepthStencilSurface
+ 
+ void init_display_depth_stencil_surfaces(void) {
+ 	init_depth_stencil_buffer(DISPLAY_WIDTH, DISPLAY_HEIGHT, &gxm_depth_stencil_surface, GL_TRUE);
++	bt3_depth_samples = VGL_ALIGN(DISPLAY_WIDTH, SCE_GXM_TILE_SIZEX) * VGL_ALIGN(DISPLAY_HEIGHT, SCE_GXM_TILE_SIZEY); // bt3 port
+ }
+ 
+ void start_shader_patcher(void) {
+@@ -571,6 +600,15 @@ void start_shader_patcher(void) {
+ #endif
+ }
+ 
++/* bt3 port (Tenkaichi3Decomp): a fight's picture handed to the chip in parts (vglSplitScene), so that the chip
++   starts on the first part while the rest is still being drawn. The colour is the surface's own between scenes;
++   the depth and stencil are stored at a part's end and loaded at the next part's start. */
++int vgl_bt3_split_on;                  /* the port: pictures may be split (each display scene stores its depth) */
++unsigned vgl_bt3_splits;               /* for the log: parts begun */
++static GLboolean bt3_split_cont;       /* the next display scene continues the picture: its depth is loaded */
++static GLboolean bt3_scene_stores;     /* the display scene in work stores its depth */
++static SceGxmDepthStencilSurface bt3_ds;
++
+ static inline __attribute__((always_inline)) void scene_end(void) {
+ 	// Ends current gxm scene
+ 	query_fence.value++;
+@@ -622,11 +660,22 @@ void scene_reset(void) {
+ 				shared_fb_info.vsync = vsync_interval;
+ 				gxm_back_buffer_index = (shared_fb_info.index + 1) % 2;
+ 			}
++			const SceGxmDepthStencilSurface *bt3_dsp = &gxm_depth_stencil_surface;
++			bt3_scene_stores = GL_FALSE;
++			if (vgl_bt3_split_on || bt3_split_cont) {
++				bt3_ds = gxm_depth_stencil_surface;
++				sceGxmDepthStencilSurfaceSetForceStoreMode(&bt3_ds, SCE_GXM_DEPTH_STENCIL_FORCE_STORE_ENABLED);
++				if (bt3_split_cont)
++					sceGxmDepthStencilSurfaceSetForceLoadMode(&bt3_ds, SCE_GXM_DEPTH_STENCIL_FORCE_LOAD_ENABLED);
++				bt3_dsp = &bt3_ds;
++				bt3_scene_stores = GL_TRUE;
++			}
++			bt3_split_cont = GL_FALSE;
+ 			int r = sceGxmBeginScene(gxm_context, 0, gxm_render_target,
+ 				NULL, NULL,
+ 				gxm_sync_objects[gxm_back_buffer_index],
+ 				&gxm_color_surfaces[gxm_back_buffer_index],
+-				&gxm_depth_stencil_surface);
++				bt3_dsp);
+ #ifdef LOG_ERRORS
+ 			if (r) {
+ 				vgl_log("%s:%d Scene reset failed due to sceGxmBeginScene erroring (%s) on display.\n", __FILE__, __LINE__, get_gxm_error_literal(r));
+@@ -717,6 +766,37 @@ void scene_reset(void) {
+ 	}
+ }
+ 
++/* bt3 port: the display's scene so far handed to the chip, the picture going on in a new scene on the same surfaces
++   (only in a display scene that stores its depth: one begun while vgl_bt3_split_on was set) */
++/* bt3 port: the display's next scene goes on with this picture (its depth loaded again, as one stored by a scene
++   begun while vgl_bt3_split_on was set): called before the display is bound again after a framebuffer object */
++void vglBt3ContNext(void) {
++	if (bt3_scene_stores)
++		bt3_split_cont = GL_TRUE;
++}
++
++/* bt3 port: after a change of framebuffer the next scene reserves its uniform buffers again (as vglSplitScene) */
++void vglBt3Dirty(void) {
++	dirty_frag_unifs = 0xFFFFFFFF;
++	dirty_vert_unifs = 0xFFFF;
++	dirty_shader_frag_unifs = dirty_shader_vert_unifs = GL_TRUE;
++}
++
++GLboolean vglSplitScene(void) {
++	if (!needs_end_scene || needs_scene_reset || active_write_fb || in_use_framebuffer || !is_rendering_display || !bt3_scene_stores || system_app_mode)
++		return GL_FALSE;
++	bt3_split_cont = GL_TRUE;
++	needs_scene_reset = GL_TRUE;
++	scene_reset();
++	// The default uniform buffers are the scene's: reserved again by the next draws
++	dirty_frag_unifs = 0xFFFFFFFF;
++	dirty_vert_unifs = 0xFFFF;
++	dirty_shader_frag_unifs = GL_TRUE;
++	dirty_shader_vert_unifs = GL_TRUE;
++	vgl_bt3_splits++;
++	return GL_TRUE;
++}
++
+ /*
+  * ------------------------------
+  * - IMPLEMENTATION STARTS HERE -
+@@ -941,6 +1021,11 @@ void vglSwapBuffers(GLboolean has_commondialog) {
+ #endif
+ 		struct display_queue_callback_data queue_cb_data;
+ 		queue_cb_data.addr = gxm_color_surfaces_addr[gxm_back_buffer_index];
++		if (gxm_back_buffer_index < 3) { // bt3 port: the size it was drawn at
++			bt3_buf_addr[gxm_back_buffer_index] = queue_cb_data.addr;
++			bt3_buf_w[gxm_back_buffer_index] = DISPLAY_WIDTH;
++			bt3_buf_h[gxm_back_buffer_index] = DISPLAY_HEIGHT;
++		}
+ #ifdef HAVE_PROFILING
+ 		tick = sceKernelGetProcessTimeLow();
+ #endif
+@@ -957,6 +1042,50 @@ void vglSwapBuffers(GLboolean has_commondialog) {
+ 	needs_scene_reset = GL_TRUE;
+ 	
+ 	// Perform resolution change if there's one pending
++	if (NEW_DISPLAY_WIDTH && !system_app_mode && bt3_color_bytes != 0 &&
++		(uint32_t)VGL_ALIGN(NEW_DISPLAY_WIDTH, 64) * (uint32_t)NEW_DISPLAY_HEIGHT * 4u <= bt3_color_bytes &&
++		(uint32_t)VGL_ALIGN(NEW_DISPLAY_WIDTH, SCE_GXM_TILE_SIZEX) * (uint32_t)VGL_ALIGN(NEW_DISPLAY_HEIGHT, SCE_GXM_TILE_SIZEY) <= bt3_depth_samples &&
++		msaa_mode == SCE_GXM_MULTISAMPLE_NONE) {
++		// bt3 port: the same memory described for the new size (colour buffers and depth / stencil)
++		sceGxmFinish(gxm_context);
++		sceGxmDestroyRenderTarget(gxm_render_target);
++		DISPLAY_WIDTH = NEW_DISPLAY_WIDTH;
++		DISPLAY_HEIGHT = NEW_DISPLAY_HEIGHT;
++		DISPLAY_WIDTH_FLOAT = DISPLAY_WIDTH * 1.0f;
++		DISPLAY_HEIGHT_FLOAT = DISPLAY_HEIGHT * 1.0f;
++		DISPLAY_STRIDE = VGL_ALIGN(DISPLAY_WIDTH, 64);
++		// bt3 port: the full-screen viewport (clears, the scissor test's mask) for the new size as well; it kept the
++		// size vitaGL was started with, so that a scissor drawn at another size came out scaled from the corner
++		fullscreen_x_port = DISPLAY_WIDTH_FLOAT / 2.0f;
++		fullscreen_x_scale = fullscreen_x_port;
++		fullscreen_y_scale = -(DISPLAY_HEIGHT_FLOAT / 2.0f);
++		fullscreen_y_port = -fullscreen_y_scale;
++		vector4f_convert_to_local_space(clear_vertices, 0, 0, DISPLAY_WIDTH, DISPLAY_HEIGHT);
++		update_scissor_test_uniforms();
++		create_display_render_target();
++		for (int i = 0; i < gxm_display_buffer_count; i++) {
++			sceGxmColorSurfaceInit(&gxm_color_surfaces[i],
++				SCE_GXM_COLOR_FORMAT_A8B8G8R8,
++				SCE_GXM_COLOR_SURFACE_LINEAR,
++				SCE_GXM_COLOR_SURFACE_SCALE_NONE,
++				SCE_GXM_OUTPUT_REGISTER_SIZE_32BIT,
++				DISPLAY_WIDTH,
++				DISPLAY_HEIGHT,
++				DISPLAY_STRIDE,
++				gxm_color_surfaces_addr[i]);
++		}
++		{
++			void *dd = gxm_depth_stencil_surface.depthData;
++			void *sd = gxm_depth_stencil_surface.stencilData;
++			vglDepthStencilSurfaceInit(&gxm_depth_stencil_surface, SCE_GXM_DEPTH_STENCIL_FORMAT_DF32M_S8, SCE_GXM_DEPTH_STENCIL_SURFACE_LINEAR,
++				VGL_ALIGN(DISPLAY_WIDTH, SCE_GXM_TILE_SIZEX), dd, sd);
++#ifdef STORE_DEPTH_STENCIL
++			sceGxmDepthStencilSurfaceSetForceLoadMode(&gxm_depth_stencil_surface, SCE_GXM_DEPTH_STENCIL_FORCE_LOAD_ENABLED);
++			sceGxmDepthStencilSurfaceSetForceStoreMode(&gxm_depth_stencil_surface, SCE_GXM_DEPTH_STENCIL_FORCE_STORE_ENABLED);
++#endif
++		}
++		NEW_DISPLAY_WIDTH = 0;
++	}
+ 	if (NEW_DISPLAY_WIDTH) {
+ 		sceGxmFinish(gxm_context);
+ 		sceGxmDestroyRenderTarget(gxm_render_target);
+@@ -970,6 +1099,12 @@ void vglSwapBuffers(GLboolean has_commondialog) {
+ 		DISPLAY_WIDTH_FLOAT = DISPLAY_WIDTH * 1.0f;
+ 		DISPLAY_HEIGHT_FLOAT = DISPLAY_HEIGHT * 1.0f;
+ 		DISPLAY_STRIDE = VGL_ALIGN(DISPLAY_WIDTH, 64);
++		// bt3 port: the full-screen viewport (clears, the scissor test's mask) for the new size as well; it kept the
++		// size vitaGL was started with, so that a scissor drawn at another size came out scaled from the corner
++		fullscreen_x_port = DISPLAY_WIDTH_FLOAT / 2.0f;
++		fullscreen_x_scale = fullscreen_x_port;
++		fullscreen_y_scale = -(DISPLAY_HEIGHT_FLOAT / 2.0f);
++		fullscreen_y_port = -fullscreen_y_scale;
+ 		vector4f_convert_to_local_space(clear_vertices, 0, 0, DISPLAY_WIDTH, DISPLAY_HEIGHT);
+ 		update_scissor_test_uniforms();
+ 		create_display_render_target();
+diff --git a/source/vgl.c b/source/vgl.c
+index bf5e4d4..a09b42f 100644
+--- a/source/vgl.c
++++ b/source/vgl.c
+@@ -808,5 +808,5 @@ void vglSetShaderCachePath(const char *path) {
+ }
+ 
+ void vglSetShaderAssociationPath(const char *path) {
+-	shark_set_shader_association_path(path);
++	(void)path; /* (not in this SDK's vitashark) */
+ }
+diff --git a/source/vitaGL.h b/source/vitaGL.h
+index 336bc14..4704582 100644
+--- a/source/vitaGL.h
++++ b/source/vitaGL.h
+@@ -1319,6 +1319,14 @@ void vglUseVramForUSSE(GLboolean usage);
+ // Allows vitaGL to use newlib memory once all internal mempools are exhausted. Default value: GL_TRUE.
+ void vglUseExtraMem(GLboolean usage);
+ 
++// bt3 port: draws sharing the current program and state, each with its own vertex uniform block and indices
++// (offset in bytes into the bound element array buffer). vglFastPrepare once, then vglFastDraw per draw.
++GLboolean vglFastPrepare(GLenum type);
++void vglFastDraw(GLenum type, uint32_t offset, uint32_t count, const void *vunif, uint32_t size);
++void vglFastDrawPtr(GLenum type, const void *idx, uint32_t count, const void *vunif, uint32_t size); /* indices anywhere in GPU-visible memory (vglAllocFromScratch) */
++uint32_t vglFastVertUniformSize(GLuint prog);
++int vglFastUniformOffset(GLuint prog, GLint location);
++
+ // Simplified function to enable or disable V-Sync. For more fine granularity on the swap interval use eglSwapInterval.
+ void vglWaitVblankStart(GLboolean enable);
+ 
