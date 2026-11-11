@@ -43,3 +43,6 @@ port/build_release/
 /PSP/
 /Tenkaichi3Decomp-psp-src.zip
 /Tenkaichi3Decomp-psp-src/
+
+# third-party reference kit (not ours to publish)
+/pessoal-nfsu2-psp-beta-0.3.0/

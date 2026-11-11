@@ -9,6 +9,10 @@
 #include "sys/loading.h"
 #include "sys/save.h"
 
+#ifdef PORT_PSP
+static void BtlLoad_PspStageBuf(BattleRes *res, s32 id); /* (defined in front of BtlLoad_StepInitial) */
+#endif
+
 /*
  * Battle loader, result block, events, battle setup and replay block: 0x127120..0x12B570, one object file in
  * the original (its .rodata only lines up as one object: the jump table of BtlLoad_StepStageChange at +0, the
@@ -187,6 +191,9 @@ s32 BtlLoad_StepStageReload(BtlJob *job) {
         } else {
             id = Battle_GetStage() + BTL_FILE_STAGE;
         }
+#ifdef PORT_PSP
+        BtlLoad_PspStageBuf(res, id);
+#endif
         res->stage = File_Request3(id, res->stage, res->stageSize);
         res->bank = File_Request3(Battle_GetStage() + BTL_FILE_SND_STAGE, res->bank, res->bankSize);
         job->state++;
@@ -244,6 +251,9 @@ s32 BtlLoad_StepStageChange(BtlJob *job) {
         job->state++;
         return 0;
     case 4:
+#ifdef PORT_PSP
+        BtlLoad_PspStageBuf(res, Battle_GetStage() + BTL_FILE_STAGE);
+#endif
         res->stage = File_Request3(Battle_GetStage() + BTL_FILE_STAGE, res->stage, res->stageSize);
         res->bank = File_Request3(Battle_GetStage() + BTL_FILE_SND_STAGE, res->bank, res->bankSize);
         job->state++;
@@ -463,6 +473,44 @@ s32 BtlLoad_StepChara(BtlJob *job) {
 }
 
 /* Job: the first load of a battle. */
+#ifdef PORT_PSP
+/* PSP with the compact heap (a PSP-1000: 14 MB where the PS2 has 27): the stage buffer is as large as the stage's own
+   file, not the 6.8 MB that hold the largest (the files are 1.3 to 7.1 MB), and is made again when a stage change brings
+   a larger one. When it does not fit the player is told, instead of the crash in memset. */
+extern s32 Port_GameHeapSize(void);
+extern void Vita_Fatal(const char *fmt, ...);
+extern void Vita_Log(const char *fmt, ...);
+extern u32 Heap_GetLargestFree(void);
+extern u32 gPortHeapUsedNow;
+static void BtlLoad_PspStageBuf(BattleRes *res, s32 id) {
+    s32 need = BTL_STAGE_BUF_SIZE;
+
+    if (Port_GameHeapSize() < 0x1800000) {
+        need = File_GetSize(id) + 0x800;
+        if (need > BTL_STAGE_BUF_SIZE) {
+            need = BTL_STAGE_BUF_SIZE;
+        }
+    }
+    if (res->stage != NULL && res->stageSize >= need) {
+        return;
+    }
+    if (res->stage != NULL) {
+        Heap_Free(res->stage);
+        res->stage = NULL;
+    }
+    Vita_Log("battle: stage file %d needs %d KB; game heap in use %u KB of %d KB, largest free block %u KB\n", (int)id, (int)(need >> 10),
+             gPortHeapUsedNow >> 10, (int)(Port_GameHeapSize() >> 10), Heap_GetLargestFree() >> 10);
+    res->stageSize = need;
+    res->stage = Heap_Alloc(res->stageSize, 0x40, 0, HEAP_ANY);
+    if (res->stage == NULL) {
+        Vita_Fatal("Not enough memory for this stage on this PSP.\nIts file needs %d KB and the largest free block is %u KB\n(game heap %u of %d KB in use).\n"
+                   "Smaller stages: put stage.txt with 14, 34, 35, 36 or 37\nin the game's folder.", (int)(need >> 10), Heap_GetLargestFree() >> 10,
+                   gPortHeapUsedNow >> 10, (int)(Port_GameHeapSize() >> 10));
+    }
+    memset(res->stage, 0, res->stageSize);
+}
+#endif
+
 s32 BtlLoad_StepInitial(BtlJob *job) {
     BattleRes *res = BATTLE_RES;
     BattleMember *m;
@@ -471,6 +519,18 @@ s32 BtlLoad_StepInitial(BtlJob *job) {
     s32 i;
     s32 id;
 
+#ifdef PORT_PSP
+    {   /* each step of the battle's load in the log, at once */
+        extern void Vita_LogFlush(void);
+        static s32 last = -1;
+        if (job->state != last) {
+            last = job->state;
+            Vita_Log("battle load: step %d (stage %d); game heap in use %u KB, largest free block %u KB\n", (int)job->state, (int)Battle_GetStartStage(),
+                     gPortHeapUsedNow >> 10, Heap_GetLargestFree() >> 10);
+            Vita_LogFlush();
+        }
+    }
+#endif
     switch (job->state) {
     case 0:
         res->sndCommon = File_Request3(BTL_FILE_SND_COMMON, NULL, 0);
@@ -509,9 +569,13 @@ s32 BtlLoad_StepInitial(BtlJob *job) {
     case 4:
         BattleSide_SetModelSlot(0, BtlObj_RequestCharaModel(0, BattleSide_GetStartChara(0), BattleSide_GetStartCostume(0), BattleSide_GetStartVariant(0)));
         BattleSide_SetModelSlot(1, BtlObj_RequestCharaModel(1, BattleSide_GetStartChara(1), BattleSide_GetStartCostume(1), BattleSide_GetStartVariant(1)));
+#ifdef PORT_PSP
+        BtlLoad_PspStageBuf(res, Battle_GetStartStage() + (Battle_IsSplitScreen() ? BTL_FILE_STAGE_SPLIT : BTL_FILE_STAGE));
+#else
         res->stageSize = BTL_STAGE_BUF_SIZE;
         res->stage = Heap_Alloc(res->stageSize, 0x40, 0, HEAP_ANY);
         memset(res->stage, 0, res->stageSize);
+#endif
         res->bankSize = BTL_BANK_BUF_SIZE;
         res->bank = Heap_Alloc(res->bankSize, 0x40, 0, HEAP_ANY);
         memset(res->bank, 0, res->bankSize);
@@ -1732,6 +1796,14 @@ s32 Battle_GetBgm(void) {
 
 /* Returns the stage the battle starts on. */
 s32 Battle_GetStartStage(void) {
+#ifdef PORT_PSP
+    {   /* stage.txt (psp_main.c): every battle on that stage, to try the small ones on a PSP-1000 */
+        extern int gPspForceStage;
+        if (gPspForceStage >= 0) {
+            return gPspForceStage;
+        }
+    }
+#endif
     return SETUP()->rule.stage;
 }
 

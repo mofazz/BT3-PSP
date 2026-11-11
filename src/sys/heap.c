@@ -70,7 +70,10 @@ HeapBlock *Heap_NextBlock(HeapBlock *block) {
 }
 
 void Heap_Create(void) {
-#ifdef PORT_VITA /* the end of the PS2 program as a number: no symbol can have that address in a Vita program */
+#if defined(PORT_PSP) /* the size the memory profile chose (psp_mem.c): the PS2's on a 2000/3000, less on a 1000 */
+    extern s32 Port_GameHeapSize(void);
+    s32 size = Port_GameHeapSize();
+#elif defined(PORT_VITA) /* the end of the PS2 program as a number: no symbol can have that address in a Vita program */
     s32 size = 0x1EFB000 - 0x3BE71C;
 #else
     s32 size = 0x1EFB000 - (u32)D_3BE71C;
@@ -243,13 +246,44 @@ void Heap_Init(void) {
     Heap_Create();
 }
 
+#ifdef PORT_PSP
+/* PSP: bytes in use and their peak, so the log can say how much of the heap the game really needs (psp_main.c). */
+u32 gPortHeapUsedNow, gPortHeapUsedPeak, gPortHeapFails;
+extern void Port_HeapAllocFailed(s32 size, s32 heap);
+#endif
+
 void *Heap_Alloc(s32 size, u32 align, s32 fromTail, s32 heap) {
     HeapBlock *block = Heap_AllocBlock(size, align, fromTail, heap);
     void *data = NULL;
+#ifdef PORT_PSP
+    if (block == NULL) { /* the decoded pictures psp_lazy.c keeps in free memory go first */
+        extern int Psp_LazyTrim(void);
+        extern int Psp_GuTrim(void); /* (and the GE's texture memory taken from free heap memory: psp_gu.c) */
+        if (Psp_LazyTrim() | Psp_GuTrim()) {
+            block = Heap_AllocBlock(size, align, fromTail, heap);
+        }
+    }
+#endif
 
     if (block != NULL) {
         data = (void *)block->data;
+#ifdef PORT_PSP
+        if (size >= 0x10000) { /* big blocks in the log: what fills the heap on a PSP-1000 */
+            extern void Port_HeapBig(s32 size, void *data, void *caller);
+            Port_HeapBig(size, (void *)block->data, __builtin_return_address(0));
+        }
+        gPortHeapUsedNow += (u32)block->size;
+        if (gPortHeapUsedNow > gPortHeapUsedPeak) {
+            gPortHeapUsedPeak = gPortHeapUsedNow;
+        }
+#endif
     }
+#ifdef PORT_PSP
+    else {
+        gPortHeapFails++;
+        Port_HeapAllocFailed(size, heap);
+    }
+#endif
     return data;
 }
 
@@ -259,6 +293,16 @@ void Heap_Free(void *ptr) {
     if (block == NULL) {
         Heap_ReportBadFree();
     }
+#ifdef PORT_PSP
+    else if (gPortHeapUsedNow >= (u32)block->size) {
+        gPortHeapUsedNow -= (u32)block->size;
+    }
+    if (block != NULL && block->size >= 0x100000) {
+        extern void Port_HeapFreed(s32 size);
+        Port_HeapFreed(block->size);
+    }
+    { extern void Psp_LazyFreed(void *ptr); Psp_LazyFreed(ptr); }
+#endif
     Heap_FreeBlock(block);
 }
 

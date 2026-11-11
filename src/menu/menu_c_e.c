@@ -343,6 +343,12 @@ void CharSel_Init(s32 section) {
     s32 stageRows;
     void *data;
 
+#ifdef PORT_PSP
+    {   /* PSP: the port's own memory is let go before this screen's data is loaded (psp_mem.c) */
+        extern void Psp_FreeMemory(const char *why);
+        Psp_FreeMemory("the character select");
+    }
+#endif
     gCharSel = Heap_Alloc(0x3A4C, 0x20, 0, 2);
     memset(gCharSel, 0, 0x3A4C);
     if (gProgress->mode == 0x2D) {

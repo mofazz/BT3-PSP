@@ -40,17 +40,16 @@ void Vita_GsPresent(uint32_t (*read)(uint32_t bp, uint32_t bw, uint32_t psm, uin
     unsigned w = fbw * 64u, st = (unsigned)gPspStep;
     unsigned long long t0;
 
-    if (gPspGuActive) {
-        return; /* the GE draws the picture (psp_gu.c) */
-    }
-
     if (gVitaGsSkipR) { /* not drawn: the screen keeps the picture before */
         gPspSkipRun++;
         gPspSkipped++;
         return;
     }
-    gPspSkipRun = 0;
+    gPspSkipRun = 0; /* (counted in GPU mode too: without it a skip run never ended, and the picture froze) */
     gPspDrawn++;
+    if (gPspGuActive) {
+        return; /* the GE draws the picture (psp_gu.c) */
+    }
     gPspPhase = 20; /* copying a picture to the screen */
     t0 = sceKernelGetSystemTimeWide();
     if (w < 256 || w > 640) {

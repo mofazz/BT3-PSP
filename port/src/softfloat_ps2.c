@@ -160,8 +160,23 @@ static int mode(int which) {
     return m[which];
 }
 static uint32_t fpu_add(uint32_t a, uint32_t b);
+#ifdef PORT_PSP
+/* PSP: the vector library's arithmetic on the console's own float unit (1 instruction, not ~100 of software). The PS2's
+   rules kept where they cost nothing: denormals as zero, no infinity or NaN (the largest number instead). Rounding is
+   the FPU's (to nearest) where the PS2 truncates: a last-bit difference. */
+static inline float psp_f(uint32_t u) { union { uint32_t u; float f; } x; x.u = (u & 0x7F800000u) ? u : (u & SIGN); return x.f; }
+static inline uint32_t psp_u(float f) {
+    union { float f; uint32_t u; } x;
+    x.f = f;
+    if ((x.u & 0x7F800000u) == 0x7F800000u) { return (x.u & SIGN) | 0x7F7FFFFFu; }
+    return (x.u & 0x7F800000u) ? x.u : (x.u & SIGN);
+}
+uint32_t RefVu0_AddBits(uint32_t a, uint32_t b) { return psp_u(psp_f(a) + psp_f(b)); }
+uint32_t RefVu0_MulBits(uint32_t a, uint32_t b) { return psp_u(psp_f(a) * psp_f(b)); }
+#else
 uint32_t RefVu0_AddBits(uint32_t a, uint32_t b) { return mode(2) ? fpu_add(a, b) : add_core(a, b, mode(0)); }
 uint32_t RefVu0_MulBits(uint32_t a, uint32_t b) { return mul_core(a, b, mode(0)); }
+#endif
 
 /* a / b; nearest = 1 rounds to nearest even (the FPU's div.s under PCSX2), 0 truncates (vdiv). */
 static uint32_t divide(uint32_t a, uint32_t b, int nearest) {
@@ -201,7 +216,11 @@ static uint32_t divide(uint32_t a, uint32_t b, int nearest) {
     return pack(sign, e, m);
 }
 
+#ifdef PORT_PSP
+uint32_t RefVu0_DivBits(uint32_t a, uint32_t b) { return (b & 0x7F800000u) ? psp_u(psp_f(a) / psp_f(b)) : (((a ^ b) & SIGN) | 0x7F7FFFFFu); }
+#else
 uint32_t RefVu0_DivBits(uint32_t a, uint32_t b) { return divide(a, b, mode(0)); }
+#endif
 uint32_t __divsf3(uint32_t a, uint32_t b) { return divide(a, b, 1); }
 
 #else /* PORT_FLOAT_HW: the primitives of src/port/vu0_a.c (compile it without REF_VU0_EXTERN_ARITH) */

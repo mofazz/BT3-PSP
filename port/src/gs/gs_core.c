@@ -64,7 +64,12 @@ static unsigned sStat[8]; /* per frame: DMA tags, VIF codes, DIRECT quadwords, G
    pixel lives depends on its format: pages of 32 blocks, blocks in a format-specific order inside the page,
    "columns" inside the block. The tables are the hardware's; the two indexed ones are generated from their first
    column (odd columns exchange the two halves of every group of eight). ---- */
+#ifdef PORT_PSP
+uint32_t *gPspGsVram; /* port/psp/psp_mem.c: the console's 4 MB of volatile memory, or a block of the main memory */
+#define sVram gPspGsVram
+#else
 static uint32_t sVram[1 << 20];
+#endif
 static const uint8_t kBlock32[4][8] = {{0, 1, 4, 5, 16, 17, 20, 21}, {2, 3, 6, 7, 18, 19, 22, 23}, {8, 9, 12, 13, 24, 25, 28, 29}, {10, 11, 14, 15, 26, 27, 30, 31}};
 static const uint8_t kBlock16[8][4] = {{0, 2, 8, 10}, {1, 3, 9, 11}, {4, 6, 12, 14}, {5, 7, 13, 15}, {16, 18, 24, 26}, {17, 19, 25, 27}, {20, 22, 28, 30}, {21, 23, 29, 31}};
 static const uint8_t kBlock16S[8][4] = {{0, 2, 16, 18}, {1, 3, 17, 19}, {8, 10, 24, 26}, {9, 11, 25, 27}, {4, 6, 20, 22}, {5, 7, 21, 23}, {12, 14, 28, 30}, {13, 15, 29, 31}};
@@ -194,6 +199,21 @@ static uint16_t sUpIndex[UP_INDEX], sUpFree[UP_MAX];
 static uint32_t sUpFreeCount, sUpBytes;
 static Blk sBlk[16384];
 static int sLazy;                     /* 0: every upload is written at once */
+static int sUpMemo;                   /* an upload found unchanged (same data, same place, GS memory still holding it) is not written
+                                         again. With sLazy always; on the PSP also without it (uploads are written, so that the GE's
+                                         textures can be read from GS memory, but not the same ones again every list) */
+#ifdef PORT_PSP
+extern volatile int gPspSect; /* psp_main.c: the profile */
+#define PSP_SECT(n, call) do { int s_ = gPspSect; gPspSect = (n); call; gPspSect = s_; } while (0)
+/* a whole texture upload at a buffer's origin: the GE's texture cache (psp_gu.c) names the texture at that place by the
+   upload's number, so that the same texture is found again whatever was uploaded to the place in between */
+extern void GsGpu_UploadNote(uint32_t dbp, uint32_t bytes, uint64_t hash);
+static struct { int on; uint32_t dbp, bytes; uint64_t hash; } sPspNote;
+#define PSP_NOTE() do { if (sPspNote.on) { sPspNote.on = 0; GsGpu_UploadNote(sPspNote.dbp, sPspNote.bytes, sPspNote.hash); } } while (0)
+#else
+#define PSP_SECT(n, call) call
+#define PSP_NOTE() do { } while (0)
+#endif
 unsigned gGsEpoch;
 unsigned gVitaUpStore[3];             /* for the log: uploads kept, their bytes, sweeps */
 
@@ -1537,6 +1557,9 @@ static void vertex(uint32_t x, uint32_t y, uint32_t z, int kick) {
             vertex_debug(&kick, type, ctx);
         }
     }
+#ifdef PORT_PSP
+    { extern unsigned gPspGsKicks; gPspGsKicks++; }
+#endif
     switch (type) {
     case 0: if (kick) { if (sGpu) { GsGpu_Draw(0, ctx, &v); } else { pixel(sf, ctx, (int)v.x, (int)v.y, v.z, vcol(&v)); } } gs.vcount = 0; break;
     case 1: if (gs.vcount == 2) { if (kick) { if (sGpu) { GsGpu_Draw(1, ctx, gs.vtx); } else { draw_line(sf, ctx, &gs.vtx[0], &gs.vtx[1]); } } gs.vcount = 0; } break;
@@ -1848,7 +1871,7 @@ static void transfer_data(const uint8_t *p, uint32_t bytes) {
            in the game's memory to the same place in GS memory is not looked at again (the game sends every texture
            every frame; reading 250 KB of them to find them unchanged was a third of such a frame). The next frame
            that is drawn looks at all of them as before. */
-        if (sLazy && gs.tpos == 0 && n == total && bytes >= 256) {
+        if (sUpMemo && gs.tpos == 0 && n == total && bytes >= 256) {
             extern int gVitaGsSkip;
             extern unsigned gVitaUpSkipped;
             static struct { const uint8_t *p; uint64_t bb; uint32_t pos, size, bytes; unsigned frame; } seen[1024], *e;
@@ -1879,7 +1902,7 @@ static void transfer_data(const uint8_t *p, uint32_t bytes) {
         /* (256 places, was 64: a test had 80 small uploads a list "seen for the first time", the others
            having pushed them out) */
         static struct { uint64_t bb; uint32_t pos, size, bytes, rect; int valid; uint32_t miss; uint8_t data[1024]; } smemo[256];
-        if (sLazy && gs.tpos == 0 && n == total && bytes <= 1024 && bytes >= 16) {
+        if (sUpMemo && gs.tpos == 0 && n == total && bytes <= 1024 && bytes >= 16) {
             uint32_t pos = gs.tx | gs.ty << 16, size = gs.tw | gs.th << 16;
             smallUp = 1;
             struct { uint64_t bb; uint32_t pos, size, bytes, rect; int valid; uint32_t miss; uint8_t data[1024]; } *m =
@@ -1923,13 +1946,17 @@ static void transfer_data(const uint8_t *p, uint32_t bytes) {
            written again, 5,500 cycles, and counted as a change of GS memory */
         void *mm = NULL;
         int memoWhy = 0;
-        if (sLazy && gs.tpos == 0 && n == total && bytes >= 2048) {
+        if (sUpMemo && gs.tpos == 0 && n == total && bytes >= 2048) {
             static struct { uint64_t bb, hash; uint32_t x, y, w, h, rect; int valid; } *m;
             extern volatile int gVitaZoneOn;
             extern void Vita_Z(int z);
             uint64_t hash;
             if (gVitaZoneOn) { Vita_Z(7); }
             hash = up_hash_quick(p, (total * bits + 7) / 8);
+#ifdef PORT_PSP
+            sPspNote.on = gs.tx == 0 && gs.ty == 0; /* (told to the GE's texture cache once the upload is written or found unchanged) */
+            sPspNote.dbp = dbp; sPspNote.bytes = (total * bits + 7) / 8; sPspNote.hash = hash;
+#endif
             if (gVitaZoneOn) { Vita_Z(16); } /* (the upload's bytes looked at) */
 
             m = (void *)&memo[(uint32_t)((hash ^ gs.bitbltbuf >> 32 ^ gs.tx * 31u ^ gs.ty * 131u) * 0x9E3779B1u) >> 24];
@@ -1948,6 +1975,7 @@ static void transfer_data(const uint8_t *p, uint32_t bytes) {
                     }
                 }
                 if (gVitaZoneOn) { Vita_Z(12); } /* (its place in GS memory found holding it still) */
+                PSP_NOTE();
                 return;
             }
             m->bb = gs.bitbltbuf; m->hash = hash; m->x = gs.tx; m->y = gs.ty; m->w = gs.tw; m->h = gs.th;
@@ -1972,6 +2000,7 @@ static void transfer_data(const uint8_t *p, uint32_t bytes) {
                 }
             }
             if (gVitaZoneOn) { Vita_Z(46); }
+            PSP_NOTE();
             return;
         }
         /* the whole block rows in this piece of the data by the block; what is in front of them and behind them
@@ -2028,6 +2057,7 @@ static void transfer_data(const uint8_t *p, uint32_t bytes) {
             gGsPageSig[i & 511]++;
         }
     }
+    PSP_NOTE();
 #ifdef PORT_VITA
     if (gVitaZoneOn && smallUp) { Vita_Z(41); } /* (a small upload's pages) */
     if (sm != NULL && gs.tpos >= total) { /* (the small upload above, written whole: what GS memory holds after it) */
@@ -2381,12 +2411,12 @@ __attribute__((hot)) void Gs_Gif(const uint8_t *p, uint32_t qwc) {
             if (gVitaZoneOn & 1) { /* */
                 unsigned c0 = 0, c1 = 0;
                 scePerfArmPmonGetCounterValue(0, 31, &c0);
-                transfer_data((const uint8_t *)q, n * 16);
+                PSP_SECT(8, transfer_data((const uint8_t *)q, n * 16));
                 scePerfArmPmonGetCounterValue(0, 31, &c1);
                 gVitaGifCyc[1] += c1 - c0;
                 gVitaGifCnt[1]++;
             } else {
-                transfer_data((const uint8_t *)q, n * 16);
+                PSP_SECT(8, transfer_data((const uint8_t *)q, n * 16));
             }
             GZM2(7);
             VPROF(3);
@@ -3243,8 +3273,8 @@ __attribute__((hot)) static void vif(const uint32_t *w, uint32_t count) {
         case 0x03: GsVu1_SetBase(imm); break;
         case 0x04: GsVu1_SetItop(imm); break;
         case 0x05: GsVu1_SetMode(imm); break;
-        case 0x14: case 0x15: GsVu1_Call((int)imm); break;
-        case 0x17: GsVu1_Call(-1); break;
+        case 0x14: case 0x15: PSP_SECT(9, GsVu1_Call((int)imm)); break;
+        case 0x17: PSP_SECT(9, GsVu1_Call(-1)); break;
         case 0x20: need = 1; break;
         case 0x30: case 0x31: need = 4; break;
         case 0x4A: need = (num ? num : 256) * 2; break;
@@ -4045,6 +4075,10 @@ static int gs_on(void) {
             {
                 extern int gVglSafe; /* vita_vgl.c; 32: every upload written at once, as before */
                 sLazy = sGpu && !(gVglSafe & 32);
+                sUpMemo = sLazy;
+#ifdef PORT_PSP
+                { extern int gPspUpMemo; sUpMemo = sGpu && gPspUpMemo; } /* (upfull.txt switches it off: psp_gu.c) */
+#endif
             }
 #endif
         }

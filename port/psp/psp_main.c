@@ -19,10 +19,17 @@
 
 PSP_MODULE_INFO("BT3PSP", 0, 1, 1);
 PSP_MAIN_THREAD_ATTR(THREAD_ATTR_USER);
-PSP_HEAP_SIZE_KB(3072); /* the C library's heap (the start-up's big buffers use the game heap, see psp_mem.c) */
+PSP_HEAP_SIZE_KB(2048); /* the C library's heap (the start-up's big buffers use the game heap, see psp_mem.c) */
 
 #define HOME "ms0:/PSP/GAME/BT3PSP"
-#define GAME_STACK 0x00400000 /* the Vita gives the game 8 MB; raise this if the log ends in a crash with no message */
+/* the game thread's stack: chosen by the memory profile in psp_mem.c (4 MB, 1 MB compact; stack.txt in KB overrides) */
+extern uint32_t gPspGameStack;
+#define GAME_STACK ((int)gPspGameStack)
+extern int gPspMemCompact;
+extern int32_t Port_GameHeapSize(void);
+extern unsigned long long gPspVblUs;
+extern volatile int gPspSect; /* the profile (below) */
+extern uint32_t gPortHeapUsedNow, gPortHeapUsedPeak, gPortHeapFails;
 
 extern int __real_main(int argc, char **argv);
 extern void Vita_LoadGameData(const char *disc);
@@ -63,6 +70,12 @@ static void commit(const char *s, unsigned n) {
 static void __attribute__((constructor(101))) early(void) {
     SceUID fd;
     sceIoMkdir(HOME, 0777);
+    /* the logs of the three runs before stay (log_1.txt the last, log_3.txt the oldest): after a freeze the console is
+       switched off and the game started again, and that start used to wipe the log of the freeze */
+    sceIoRemove(HOME "/log_3.txt");
+    sceIoRename(HOME "/log_2.txt", HOME "/log_3.txt");
+    sceIoRename(HOME "/log_1.txt", HOME "/log_2.txt");
+    sceIoRename(LOGFILE, HOME "/log_1.txt");
     fd = sceIoOpen(LOGFILE, PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
     if (fd >= 0) {
         static const char s[] = "[      0 ms] early: the program started (constructors run)\n";
@@ -105,7 +118,12 @@ void Vita_Log(const char *fmt, ...) {
 /* Writes what the ring holds plus `extra` in one commit. */
 static void flush_ring(const char *extra) {
     static char tmp[RING + 512];
-    unsigned wr = sWr, rd = sRd, n = 0, i;
+    static volatile int busy; /* (the heartbeat and the game thread: one at a time, the other's lines go with the next) */
+    unsigned wr, rd, n = 0, i;
+    if (__sync_lock_test_and_set(&busy, 1)) {
+        return;
+    }
+    wr = sWr; rd = sRd;
     for (i = rd; i != wr; i++) {
         tmp[n++] = sRing[i % RING];
     }
@@ -118,6 +136,12 @@ static void flush_ring(const char *extra) {
     if (n) {
         commit(tmp, n);
     }
+    __sync_lock_release(&busy);
+}
+
+/* What the log holds goes to the Memory Stick now (before something that may freeze the console). */
+void Vita_LogFlush(void) {
+    flush_ring(NULL);
 }
 
 static unsigned file_size(const char *path);
@@ -141,6 +165,17 @@ void Vita_Fatal(const char *fmt, ...) {
     vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
     Vita_Log("FATAL: %s\n", buf);
+    flush_ring(NULL);
+    {   /* in GPU mode the debug text is kept off the picture: put it on the buffer that is shown */
+        extern int Psp_GuDispOffset(void);
+        int off = Psp_GuDispOffset();
+        if (off >= 0) {
+            pspDebugScreenSetOffset(off);
+            pspDebugScreenSetBackColor(0xFF000000);
+            pspDebugScreenSetTextColor(0xFFFFFFFF);
+            pspDebugScreenSetXY(0, 6);
+        }
+    }
     pspDebugScreenPrintf("\n%s\n\nPress CROSS to leave.\n", buf);
     wait_cross();
     sceKernelExitGame();
@@ -220,6 +255,7 @@ volatile int gPspDebug;         /* the overlay (SELECT + START) */
 volatile int gPspStep = 2;       /* 1, 2 or 4: only every n-th pixel is drawn (step.txt) */
 unsigned gPspPresentMs;          /* total time copying pictures to the screen */
 int gPspSkipMax = 11;
+int gPspForceStage = -1;    /* stage.txt: the stage of every battle (src/battle/battle_load.c), -1 = the player's choice */
 static long long sDebt;          /* microseconds the game is behind the vertical blank */
 static unsigned long long sAfterWait;
 unsigned gPspSkipped, gPspDrawn;
@@ -247,7 +283,7 @@ void Vita_VBlank(unsigned vblanks) {
         }
         gPspSkip = gPspSkipMax > 0 && sDebt > 10000 && gPspSkipRun < gPspSkipMax;
         gPspPhase = 11; /* waiting for the vertical blank */
-        sceDisplayWaitVblankStart(); /* the menus run at the console's 60 Hz */
+        { unsigned long long w0 = sceKernelGetSystemTimeWide(); int sect = gPspSect; gPspSect = 6; sceDisplayWaitVblankStart(); gPspSect = sect; gPspVblUs += sceKernelGetSystemTimeWide() - w0; } /* the menus run at the console's 60 Hz */
         sAfterWait = now_us();
         gPspPhase = 12; /* back in the game */
     }
@@ -296,10 +332,71 @@ void __wrap_exit(int code) {
 }
 
 /* ---- the debug overlay (SELECT + START): speed and memory, drawn on the picture ---- */
-extern unsigned gPspPresented, gPspGuFrames, gPspGuPrims, gPspGuTexDecodes, gPspGuTexHits, gPspGuOtherTarget, gPspGuVuIgnored, gPspGuBigTex, gPspGsCalls;
+extern unsigned gPspPresented, gPspGuFrames, gPspGuPrims, gPspGuTexDecodes, gPspGuTexHits, gPspGuOtherTarget, gPspGuVuIgnored, gPspGuBigTex, gPspGsCalls, gPspGuDraws;
 extern unsigned long long gPspGsUs, gPspGuTexUs;
 extern volatile int gPspGuActive;
 static SceUID sGameTh = -1;
+
+/* The profile: where the game thread's time goes. The thread says what it is doing in gPspSect (0 the game's own code,
+   1 decoding a left-out picture, 2 hashing a picture for the pack, 3 unpacking a file, 4 reading the disc, 5 the PS2
+   graphics commands, 6 waiting for the vertical blank) and a small thread looks every 2 ms. */
+volatile int gPspSect;
+unsigned gPspSectN[16];
+static int prof_thread(SceSize args, void *argp) {
+    (void)args; (void)argp;
+    for (;;) {
+        sceKernelDelayThread(2000);
+        gPspSectN[gPspSect & 15]++;
+    }
+    return 0;
+}
+
+/* The RAM meter (always on unless noram.txt): one line on top of every picture the GE shows (psp_gu.c). */
+int gPspRamMeter = 1;
+unsigned long long gPspVblUs; /* the game thread waiting for the vertical blank: idle CPU */
+void Psp_RamMeter(int off) {
+    static unsigned long long t0, gs0, tx0, ge0, vb0;
+    static unsigned f0, fpsx10, pGame, pGs, pTex, pGe, pVbl;
+    static unsigned sn0[16], sp[16];
+    extern unsigned gPspGuArenaResets, gVitaUpSkipped, gPspGuClutRefresh, gPspGuTexRemade, gPspGuTexBytes, gPspGuHeapChunks;
+    extern unsigned gPspLazyCacheBytes, gPspLazyDecodes, gPspLazyHits, gPspPackHashes, gPspPackHashKB;
+    extern unsigned gPspGuFrames;
+    extern unsigned long long gPspGsUs, gPspGuTexUs, gPspGeWaitUs;
+    unsigned long long now = sceKernelGetSystemTimeWide();
+    if (now - t0 >= 1000000ull) { /* the CPU's second: the game's own code, the PS2 graphics commands (textures and
+                                     the wait for the GPU inside them), the wait for the vertical blank */
+        unsigned long long dt = now - t0, gs = gPspGsUs - gs0, vb = gPspVblUs - vb0;
+        fpsx10 = t0 ? (unsigned)((gPspGuFrames - f0) * 10000000ull / dt) : 0;
+        pGs = (unsigned)(gs * 100ull / dt); pTex = (unsigned)((gPspGuTexUs - tx0) * 100ull / dt); pGe = (unsigned)((gPspGeWaitUs - ge0) * 100ull / dt);
+        pVbl = (unsigned)(vb * 100ull / dt);
+        pGame = pGs + pVbl < 100 ? 100 - pGs - pVbl : 0;
+        {
+            unsigned k, tot = 0, d[16];
+            for (k = 0; k < 16; k++) { d[k] = gPspSectN[k] - sn0[k]; sn0[k] += d[k]; tot += d[k]; }
+            for (k = 0; k < 16; k++) { sp[k] = tot ? d[k] * 100u / tot : 0; }
+            if (t0) { /* the PS2 graphics time by part; "lists" is what is left: reading the display lists and the GS registers */
+                Vita_Log("gfx: lists %u%%, uploads %u%%, vertex programs %u%%, drawing %u%%, textures made %u%%, pack read %u%%, GE wait %u%%; texture memory emptied %u times, uploads skipped %u, palettes read again %u, textures remade in place %u; texture memory filled %u KB so far, %u pieces from the game heap\n",
+                         sp[5], sp[8], sp[9], sp[10], sp[11], sp[12], sp[13], gPspGuArenaResets, gVitaUpSkipped, gPspGuClutRefresh, gPspGuTexRemade, gPspGuTexBytes >> 10, gPspGuHeapChunks);
+            }
+            if (t0) {
+                Vita_Log("profile: own code %u%%, picture decode %u%%, pack hash %u%%, unpack %u%%, disc %u%%, PS2 graphics %u%%, vblank %u%%; pictures kept %u KB (reused %u, decoded %u); pack hashes %u (%u KB)\n",
+                         sp[0], sp[1], sp[2], sp[3], sp[4], sp[5], sp[6], gPspLazyCacheBytes >> 10, gPspLazyHits, gPspLazyDecodes, gPspPackHashes, gPspPackHashKB);
+            }
+        }
+        if (t0) {
+            Vita_Log("cpu: game %u%%, PS2 graphics %u%% (textures %u%%, GPU wait %u%%), vblank wait %u%%, %u.%u fps\n", pGame, pGs, pTex, pGe, pVbl, fpsx10 / 10, fpsx10 % 10);
+        }
+        t0 = now; f0 = gPspGuFrames; gs0 = gPspGsUs; tx0 = gPspGuTexUs; ge0 = gPspGeWaitUs; vb0 = gPspVblUs;
+    }
+    pspDebugScreenSetOffset(off);
+    pspDebugScreenSetBackColor(0xFF000000);
+    pspDebugScreenSetTextColor(0xFF00FF00);
+    pspDebugScreenSetXY(0, 0);
+    pspDebugScreenPrintf("RAM game %u/%u KB (peak %u)  free %u KB  %u.%u fps ", gPortHeapUsedNow >> 10, (unsigned)Port_GameHeapSize() >> 10,
+                         gPortHeapUsedPeak >> 10, (unsigned)(sceKernelTotalFreeMemSize() >> 10), fpsx10 / 10, fpsx10 % 10);
+    pspDebugScreenPrintf("\nCPU game %u%%  PS2 gfx %u%% (tex %u%%, GPU wait %u%%)  idle %u%%   ", pGame, pGs, pTex, pGe, pVbl);
+    pspDebugScreenPrintf("\nown %u%% decode %u%% hash %u%% unpack %u%% disc %u%%  kept %u KB   ", sp[0], sp[1], sp[2], sp[3], sp[4], gPspLazyCacheBytes >> 10);
+}
 
 void Psp_DebugOverlay(int off) {
     static unsigned long long t0;
@@ -326,7 +423,8 @@ void Psp_DebugOverlay(int off) {
     pspDebugScreenSetTextColor(0xFFFFFFFF);
     pspDebugScreenSetXY(0, 0);
     pspDebugScreenPrintf("%s  shown %u.%u/s  vbl %u/s  GS %u ms/pic  tex %u ms/pic      \n", gPspGuActive ? "GU" : "SW", fpsx10 / 10, fpsx10 % 10, vbl, gsms, txms);
-    pspDebugScreenPrintf("prims %u tex new %u hit %u  other-buf %u big %u vu %u    \n", gPspGuPrims, gPspGuTexDecodes, gPspGuTexHits, gPspGuOtherTarget, gPspGuBigTex, gPspGuVuIgnored);
+    pspDebugScreenPrintf("prims %u draws %u tex new %u hit %u  other-buf %u big %u vu %u    \n", gPspGuPrims, gPspGuDraws, gPspGuTexDecodes, gPspGuTexHits, gPspGuOtherTarget, gPspGuBigTex, gPspGuVuIgnored);
+    pspDebugScreenPrintf("%s heap peak %u of %u KB    \n", gPspMemCompact ? "COMPACT" : "extended", gPortHeapUsedPeak >> 10, (unsigned)Port_GameHeapSize() >> 10);
     pspDebugScreenPrintf("RAM free %d KB (max %d)  game stack free %d KB    \n", (int)(sceKernelTotalFreeMemSize() >> 10), (int)(sceKernelMaxFreeMemSize() >> 10),
                          sGameTh >= 0 ? sceKernelGetThreadStackFreeSize(sGameTh) >> 10 : -1);
     pspDebugScreenPrintf("CPU %d bus %d MHz  battery %d%%  %s    \n", scePowerGetCpuClockFrequency(), scePowerGetBusClockFrequency(), scePowerGetBatteryLifePercent(),
@@ -449,16 +547,18 @@ static int heartbeat_thread(SceSize args, void *argp) {
         {
             char pw[120];
             power_line(pw, sizeof(pw));
-            snprintf(line, sizeof(line), "[%7u ms] alive: %u vblanks (+%u), pictures drawn %u left out %u (copying them took %u ms), last stub %s, free %u KB, stack free %d KB, %u calls; %s\n",
+            snprintf(line, sizeof(line), "[%7u ms] alive: %u vblanks (+%u), pictures drawn %u left out %u (copying them took %u ms), last stub %s, free %u KB, stack free %d KB, game heap %u KB (peak %u, %u refused), %u calls; %s\n",
                      (unsigned)((now_us() - sStart) / 1000ull), v, v - last, gPspDrawn, gPspSkipped, gPspPresentMs, sLastStub ? (const char *)sLastStub : "-",
-                     (unsigned)sceKernelTotalFreeMemSize() >> 10, sGameTh >= 0 ? sceKernelGetThreadStackFreeSize(sGameTh) >> 10 : -1, gCrumbN, pw);
+                     (unsigned)sceKernelTotalFreeMemSize() >> 10, sGameTh >= 0 ? sceKernelGetThreadStackFreeSize(sGameTh) >> 10 : -1, gPortHeapUsedNow >> 10,
+                     gPortHeapUsedPeak >> 10, gPortHeapFails, gCrumbN, pw);
         }
         flush_ring(line);
         if (gPspGuActive) { /* what the GPU back end has done (psp_gu.c) */
-            char g2[260];
-            snprintf(g2, sizeof(g2), "[%7u ms] gu: pictures %u prims %u (textured %u plain %u), textures new %u hit %u (%u ms), left out: other buffer %u, too big %u, vu %u, frame-buffer-as-texture %u, gGsMainFbp %d\n",
+            extern unsigned gPspGsKicks, gPspGuNoTex, gPspGuFbUploads;
+            char g2[360];
+            snprintf(g2, sizeof(g2), "[%7u ms] gu: pictures %u prims %u (textured %u plain %u), textures new %u hit %u (%u ms), left out: other buffer %u, too big %u, vu %u, frame-buffer-as-texture %u, gGsMainFbp %d; GS lists %u vertices %u, no texture %u, picture uploads %u\n",
                      (unsigned)((now_us() - sStart) / 1000ull), gPspGuFrames, gPspGuPrims, gPspGuTextured, gPspGuPlain, gPspGuTexDecodes, gPspGuTexHits, (unsigned)(gPspGuTexUs / 1000ull),
-                     gPspGuOtherTarget, gPspGuBigTex, gPspGuVuIgnored, gPspGuRtt, gGsMainFbp);
+                     gPspGuOtherTarget, gPspGuBigTex, gPspGuVuIgnored, gPspGuRtt, gGsMainFbp, gPspGsCalls, gPspGsKicks, gPspGuNoTex, gPspGuFbUploads);
             flush_ring(g2);
         }
         if (!gPspPicture) {
@@ -585,6 +685,19 @@ int __wrap_main(int argc, char **argv) {
             Vita_Log("most pictures left out in a row: %d\n", gPspSkipMax);
         }
         {
+            /* stage.txt: a stage number 0..38 for every battle (the small files: 14, 34, 35, 36, 37) */
+            SceUID sf = sceIoOpen(HOME "/stage.txt", PSP_O_RDONLY, 0);
+            if (sf >= 0) {
+                char t[16] = {0};
+                sceIoRead(sf, t, sizeof(t) - 1);
+                sceIoClose(sf);
+                if (t[0] >= '0' && t[0] <= '9' && atoi(t) <= 38) {
+                    gPspForceStage = atoi(t);
+                }
+                Vita_Log("stage.txt: every battle on stage %d\n", gPspForceStage);
+            }
+        }
+        {
             /* step.txt: 1 = every pixel, 2 = every second pixel in x and y (default), 4 = every fourth (very blocky, fastest) */
             SceUID sf = sceIoOpen(HOME "/step.txt", PSP_O_RDONLY, 0);
             if (sf >= 0) {
@@ -628,9 +741,14 @@ int __wrap_main(int argc, char **argv) {
         sDemo = (pad.Buttons & PSP_CTRL_TRIANGLE) != 0 || file_size(HOME "/demo.txt") != 0xFFFFFFFFu;
     }
     gPspUseGu = file_size(HOME "/gu.txt") != 0xFFFFFFFFu;
+    gPspRamMeter = file_size(HOME "/noram.txt") == 0xFFFFFFFFu;
+    if (gPspUseGu) { /* the textures converted on the PC (psp_pack.c) */
+        extern void Psp_PackInit(const char *path);
+        Psp_PackInit(HOME "/bt3psp.tex");
+    }
     Vita_Log("mode: %s\n", sDemo ? "timing run (the demo fight, no picture)" : gPspUseGu ? "menus/game, the PSP's GPU draws (gu.txt)" : "menus/game, the software renderer draws (slow; put a gu.txt in the game's folder for the GPU)");
     Vita_Log("memory plan (KB): game heap %u, game stack %u, C heap 3072, early DMA lists 256, GE list 192 + texture cache 2048 (GPU mode), GS memory 4096 + other GS arrays; the rest is the program itself\n",
-             29000u, (unsigned)(GAME_STACK >> 10));
+             27389u, 0u /* both are chosen later: see the "memory profile" line */);
     {
         char prx[320], detail[256], exedir[260] = HOME;
         int er;
@@ -750,8 +868,12 @@ int __wrap_main(int argc, char **argv) {
     Vita_Log("game data tables read; free %u KB, largest block %u KB\n", (unsigned)sceKernelTotalFreeMemSize() >> 10, (unsigned)sceKernelMaxFreeMemSize() >> 10);
     {
         SceUID hb = sceKernelCreateThread("bt3_heartbeat", heartbeat_thread, 0x10, 0x4000, THREAD_ATTR_USER, NULL);
+        SceUID pf = sceKernelCreateThread("bt3_profile", prof_thread, 0x0F, 0x1000, THREAD_ATTR_USER, NULL);
         if (hb >= 0) {
             sceKernelStartThread(hb, 0, NULL);
+        }
+        if (pf >= 0) {
+            sceKernelStartThread(pf, 0, NULL);
         }
     }
     Vita_Log("starting the game's thread (stack %d KB)\n", GAME_STACK >> 10);
@@ -759,7 +881,7 @@ int __wrap_main(int argc, char **argv) {
     th = sceKernelCreateThread("bt3_game", game_thread, 0x20, GAME_STACK, THREAD_ATTR_USER, NULL);
     sGameTh = th;
     if (th < 0 || sceKernelStartThread(th, 0, NULL) < 0) {
-        Vita_Fatal("cannot start the game's thread (error 0x%08X): not enough memory for its %d MB stack?", (unsigned)th, GAME_STACK >> 20);
+        Vita_Fatal("cannot start the game's thread (error 0x%08X): not enough memory for its %d KB stack?", (unsigned)th, GAME_STACK >> 10);
     }
     pspDebugScreenPrintf("Running ...\n");
     sceKernelWaitThreadEnd(th, NULL);

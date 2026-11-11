@@ -1179,6 +1179,16 @@ void BtlRes_Init(s32 prealloc) {
     BtlResFile *spare;
     s32 i;
 
+#ifdef PORT_PSP
+    {
+        extern void Vita_Log(const char *fmt, ...);
+        extern void Vita_LogFlush(void);
+        extern void Psp_FreeMemory(const char *why);
+        Vita_Log("battle: the fighters' buffers are set up (BtlRes_Init, prealloc %d)\n", (int)prealloc);
+        Vita_LogFlush();
+        Psp_FreeMemory("the battle's load"); /* (the port's own memory let go before the battle's buffers are taken) */
+    }
+#endif
     memset(res, 0, sizeof(BtlResWork));
     res->prealloc = prealloc;
     if (prealloc != 0) {

@@ -28,10 +28,34 @@ void *Bpe_Decode(void *src, void *dst, s32 *rawSize) {
     if (dst != NULL) {
         buf = dst;
     } else {
+#ifdef PORT_PSP
+        { /* with bt3psp.tex, every big sheet without its pictures (the pack has them small): less memory, no decoding */
+            extern int gPspPackN;
+            extern void *Psp_LazyBpe(const u8 *packed, u32 size, u32 packSize);
+            if (gPspPackN > 0 && size >= 0x80000) {
+                void *lazy = Psp_LazyBpe((const u8 *)src, (u32)size, (u32)packSize);
+                if (lazy != NULL) {
+                    return lazy;
+                }
+            }
+        }
+#endif
         buf = Heap_Alloc(size, 0x20, 0, HEAP_ANY);
+#ifdef PORT_PSP
+        if (buf == NULL) { /* too big for a PSP-1000: unpacked without its texture pixels (port/psp/psp_lazy.c) */
+            extern void *Psp_LazyBpe(const u8 *packed, u32 size, u32 packSize);
+            void *lazy = Psp_LazyBpe((const u8 *)src, (u32)size, (u32)packSize);
+            if (lazy != NULL) {
+                return lazy;
+            }
+        }
+#endif
     }
     out = buf;
     in = src;
+#ifdef PORT_PSP
+    { extern volatile int gPspSect; gPspSect = 3; } /* the profile's "unpack" */
+#endif
     while (in - (u8 *)src != packSize) {
         count = *in++;
         for (i = 0; i < 256; i++) {
@@ -77,5 +101,8 @@ void *Bpe_Decode(void *src, void *dst, s32 *rawSize) {
             }
         }
     }
+#ifdef PORT_PSP
+    { extern volatile int gPspSect; gPspSect = 0; }
+#endif
     return buf;
 }

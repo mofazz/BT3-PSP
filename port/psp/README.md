@@ -37,6 +37,13 @@ The log is `ms0:/PSP/GAME/BT3PSP/log.txt`. Every line of the start-up is written
   expect seconds per frame at first. 60 Hz pacing via `sceDisplayWaitVblankStart`.
 - **Timing run:** hold TRIANGLE while the game starts, or put an empty `demo.txt` in `ms0:/PSP/GAME/BT3PSP/`. The attract-demo
   fight runs without a picture and the log gives the microseconds per vblank (see above).
+- **Memory profile:** chosen at start (log line `memory profile:`). *Extended* gives the game the PS2's 27.2 MB heap;
+  *compact* (a PSP-1000 without ARK's extra memory) gives it what is left. The GE texture cache goes to the 4 MB of volatile
+  memory when the system lends it. `stack.txt` = game stack in KB (default 4096, compact 1024). Every `alive:` line has
+  the heap in use, its peak and how many requests were refused (`game heap FULL` lines name them).
+- **GPU tuning (gu.txt mode):** textures are swizzled and primitives with the same state go to the GE in one draw (the
+  NFSU2 port's measurements); an empty `nofast.txt` switches both off to compare. An empty `fb16.txt` draws a 16-bit
+  picture (half the VRAM and fill cost; no debug overlay then).
 
 ### Fixes from the first run's log
 `Battle_Load` waits for `Snd_IsUploadDone()`, which is `func_002967C0(1, 0x80F0, ...)` answering 1. The first build's

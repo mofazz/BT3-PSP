@@ -1,0 +1,397 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Carpeta BT3 PSP</title>
+<style>
+:root { --bg:#f6f6f4; --card:#fff; --fg:#1d1d1f; --muted:#666; --line:#ddd; --acc:#2f5fd0; --ok:#1f8a4c; --bad:#c0392b; }
+@media (prefers-color-scheme: dark) { :root { --bg:#161618; --card:#202024; --fg:#ececec; --muted:#9a9a9a; --line:#333; --acc:#7aa2ff; --ok:#4cc27e; --bad:#ff7a6b; } }
+* { box-sizing:border-box; }
+body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.5 system-ui, sans-serif; }
+main { max-width:760px; margin:0 auto; padding:24px 16px 48px; }
+h1 { font-size:22px; margin:0 0 4px; }
+p.sub { color:var(--muted); margin:0 0 20px; }
+section { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; margin-bottom:14px; }
+h2 { font-size:15px; margin:0 0 8px; }
+.row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+button { font:inherit; padding:7px 14px; border-radius:7px; border:1px solid var(--line); background:var(--bg); color:var(--fg); cursor:pointer; }
+button.primary { background:var(--acc); border-color:var(--acc); color:#fff; font-weight:600; }
+button:disabled { opacity:.5; cursor:default; }
+.st { color:var(--muted); font-size:13px; word-break:break-all; }
+.st.ok { color:var(--ok); } .st.bad { color:var(--bad); }
+.opts { display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:10px 18px; }
+label { display:flex; gap:8px; align-items:flex-start; font-size:14px; }
+label small { display:block; color:var(--muted); font-size:12px; }
+select, input[type=number] { font:inherit; padding:3px 6px; border-radius:5px; border:1px solid var(--line); background:var(--bg); color:var(--fg); width:90px; }
+progress { width:100%; height:10px; }
+pre { background:var(--bg); border:1px solid var(--line); border-radius:7px; padding:10px; font-size:12px; max-height:220px; overflow:auto; white-space:pre-wrap; margin:10px 0 0; }
+code { font-size:13px; }
+</style>
+</head>
+<body>
+<main>
+<h1>Carpeta de juego BT3 PSP</h1>
+<p class="sub">Copia el EBOOT, los archivos de tu disco y las opciones de prueba a la Memory Stick. Necesita Chrome o Edge (abre este archivo directamente con doble clic).</p>
+
+<section>
+  <h2>1. EBOOT.PBP</h2>
+  <div class="row"><button id="bEboot">Elegir EBOOT.PBP</button><span class="st" id="sEboot">Normalmente en <code>port/build/psp/EBOOT.PBP</code>. Recompila antes para incluir las Fases 1 y 2.</span></div>
+  <div class="row" style="margin-top:8px"><button id="bPrx">Elegir ps2rc_exc.prx</button><span class="st" id="sPrx">Opcional pero recomendado: escribe crash.txt si el juego se cuelga. Está junto al EBOOT.</span></div>
+</section>
+
+<section>
+  <h2>2. Archivos del disco</h2>
+  <div class="row"><button id="bDisc">Elegir carpeta del disco</button><span class="st" id="sDisc">La carpeta con <code>SLUS_216.78</code>, <code>BIN/</code> y <code>DATA/</code> extraídos de tu ISO (USA).</span></div>
+  <label style="margin-top:8px"><input type="checkbox" id="skipDisc"> No copiar el disco (ya está en la Memory Stick)</label>
+</section>
+
+<section>
+  <h2>3. Opciones de prueba</h2>
+  <div class="opts">
+    <label><input type="checkbox" id="o_gu" checked><span>gu.txt<small>Dibuja con la GPU. Imprescindible en la 1000.</small></span></label>
+    <label><input type="checkbox" id="o_fb16"><span>fb16.txt<small>Imagen de 16 bits; sin pantalla de depuración.</small></span></label>
+    <label><input type="checkbox" id="o_nofast"><span>nofast.txt<small>Desactiva swizzle y lotes (para comparar).</small></span></label>
+    <label><input type="checkbox" id="o_noram"><span>noram.txt<small>Oculta el medidor de RAM y fps de arriba.</small></span></label>
+    <label><input type="checkbox" id="o_demo"><span>demo.txt<small>Combate de demostración sin imagen, mide tiempos.</small></span></label>
+    <label><span>clock.txt<small>MHz de la CPU</small></span><select id="o_clock"><option value="">(por defecto 333)</option><option>333</option><option>266</option><option>222</option></select></label>
+    <label><span>stack.txt<small>Pila del juego en KB</small></span><input type="number" id="o_stack" min="128" step="128" placeholder="auto"></label>
+    <label><span>skip.txt<small>Imágenes saltadas seguidas (0–60)</small></span><input type="number" id="o_skip" min="0" max="60" placeholder="11"></label>
+    <label><span>step.txt<small>Paso de píxel (renderer por software)</small></span><select id="o_step"><option value="">(por defecto 2)</option><option>1</option><option>2</option><option>4</option></select></label>
+  </div>
+  <label style="margin-top:12px"><input type="checkbox" id="o_tex" checked><span>Crear paquete de texturas (bt3psp.tex)<small>Convierte las texturas de los sprites del disco al formato del GE de la PSP (índices T8/T4 o 8888, con swizzle), como hace el port de NFSU2. Tarda unos minutos. Necesita la carpeta del disco del paso 2.</small></span></label>
+  <label><span>Tamaño máximo de las texturas<small>Más pequeño = más rápido y menos memoria, menos nítido. La consola lee este paquete en lugar de convertir cada textura.</small></span><select id="o_texmax"><option>32</option><option selected>64</option><option>128</option><option>256</option></select></label>
+</section>
+
+<section>
+  <h2>4. Memory Stick</h2>
+  <div class="row"><button id="bMs">Elegir raíz de la Memory Stick</button><span class="st" id="sMs">La unidad de la PSP (por ejemplo <code>E:\</code>), la que contiene la carpeta <code>PSP</code>.</span></div>
+  <label style="margin-top:8px"><input type="checkbox" id="clean" checked> Borrar log.txt, crash.txt y crumbs.txt anteriores</label>
+</section>
+
+<section>
+  <div class="row"><button class="primary" id="bGo" disabled>Crear carpeta</button><span class="st" id="sGo"></span></div>
+  <progress id="prog" value="0" max="1" hidden></progress>
+  <pre id="log" hidden></pre>
+</section>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+let eboot = null, disc = null, ms = null;
+const supported = 'showDirectoryPicker' in window;
+if (!supported) { $('sGo').textContent = 'Este navegador no permite escribir carpetas: usa Chrome o Edge.'; $('sGo').className = 'st bad'; }
+
+function setSt(id, text, cls) { $(id).textContent = text; $(id).className = 'st ' + (cls || ''); }
+function log(t) { const l = $('log'); l.hidden = false; l.textContent += t + '\n'; l.scrollTop = l.scrollHeight; }
+function ready() { $('bGo').disabled = !(supported && eboot && ms && (disc || $('skipDisc').checked)); }
+const mb = n => (n / 1048576).toFixed(1) + ' MB';
+
+$('bEboot').onclick = async () => {
+  try {
+    const [h] = await showOpenFilePicker({ types: [{ description: 'EBOOT', accept: { 'application/octet-stream': ['.PBP', '.pbp'] } }] });
+    const f = await h.getFile();
+    const head = new Uint8Array(await f.slice(0, 4).arrayBuffer());
+    if (head[0] !== 0 || head[1] !== 0x50 || head[2] !== 0x42 || head[3] !== 0x50) { setSt('sEboot', f.name + ': no es un PBP válido', 'bad'); eboot = null; }
+    else { eboot = f; setSt('sEboot', f.name + ' · ' + mb(f.size) + ' · modificado ' + new Date(f.lastModified).toLocaleString(), 'ok'); }
+  } catch (e) {}
+  ready();
+};
+
+let prx = null;
+$('bPrx').onclick = async () => {
+  try {
+    const [h] = await showOpenFilePicker({ types: [{ description: 'PRX', accept: { 'application/octet-stream': ['.prx'] } }] });
+    prx = await h.getFile();
+    setSt('sPrx', prx.name + ' · ' + (prx.size / 1024).toFixed(1) + ' KB', 'ok');
+  } catch (e) {}
+};
+
+async function walk(dir, path, out) {
+  for await (const [name, h] of dir.entries()) {
+    if (h.kind === 'file') out.push({ path: path + name, h });
+    else await walk(h, path + name + '/', out);
+  }
+  return out;
+}
+
+$('bDisc').onclick = async () => {
+  try {
+    const d = await showDirectoryPicker({ id: 'disc' });
+    const names = []; for await (const [n] of d.entries()) names.push(n.toUpperCase());
+    const miss = ['SLUS_216.78', 'BIN', 'DATA'].filter(n => !names.includes(n));
+    if (miss.length) { setSt('sDisc', d.name + ': falta ' + miss.join(', '), 'bad'); disc = null; }
+    else {
+      setSt('sDisc', 'Contando archivos…');
+      const files = await walk(d, '', []);
+      let total = 0; for (const f of files) total += (await f.h.getFile()).size;
+      disc = { d, files, total };
+      setSt('sDisc', d.name + ' · ' + files.length + ' archivos · ' + mb(total), 'ok');
+    }
+  } catch (e) {}
+  ready();
+};
+$('skipDisc').onchange = ready;
+
+$('bMs').onclick = async () => {
+  try {
+    ms = await showDirectoryPicker({ id: 'ms', mode: 'readwrite' });
+    setSt('sMs', ms.name + ' (se escribirá en PSP/GAME/BT3PSP y PSP/GAME/bt3/disc)', 'ok');
+  } catch (e) {}
+  ready();
+};
+
+async function sub(dir, path) { for (const p of path.split('/').filter(Boolean)) dir = await dir.getDirectoryHandle(p, { create: true }); return dir; }
+async function writeFile(dir, name, data) { const fh = await dir.getFileHandle(name, { create: true }); const w = await fh.createWritable(); await w.write(data); await w.close(); }
+async function removeIf(dir, name) { try { await dir.removeEntry(name); return true; } catch (e) { return false; } }
+
+let step = '';
+$('bGo').onclick = async () => {
+  $('bGo').disabled = true; $('log').textContent = ''; setSt('sGo', 'Copiando…');
+  const prog = $('prog'); prog.hidden = false;
+  try {
+    step = 'abrir PSP/GAME/BT3PSP en la Memory Stick (¿se desconectó? vuelve a elegirla en el paso 4)';
+    const home = await sub(ms, 'PSP/GAME/BT3PSP');
+    await writeFile(home, 'EBOOT.PBP', eboot); log('PSP/GAME/BT3PSP/EBOOT.PBP  ' + mb(eboot.size));
+    if (prx) { await writeFile(home, 'ps2rc_exc.prx', prx); log('PSP/GAME/BT3PSP/ps2rc_exc.prx'); }
+
+    const flags = { gu: 'gu.txt', fb16: 'fb16.txt', nofast: 'nofast.txt', demo: 'demo.txt', noram: 'noram.txt' };
+    for (const [k, name] of Object.entries(flags)) {
+      if ($('o_' + k).checked) { await writeFile(home, name, ''); log('  + ' + name); }
+      else if (await removeIf(home, name)) log('  - ' + name + ' (quitado)');
+    }
+    const vals = { clock: 'clock.txt', stack: 'stack.txt', skip: 'skip.txt', step: 'step.txt' };
+    for (const [k, name] of Object.entries(vals)) {
+      const v = $('o_' + k).value.trim();
+      if (v !== '') { await writeFile(home, name, v); log('  + ' + name + ' = ' + v); }
+      else if (await removeIf(home, name)) log('  - ' + name + ' (quitado)');
+    }
+    if ($('clean').checked) for (const n of ['log.txt', 'crash.txt', 'crumbs.txt']) if (await removeIf(home, n)) log('  - ' + n + ' (log anterior borrado)');
+
+    if (disc && !$('skipDisc').checked) {
+      const root = await sub(ms, 'PSP/GAME/bt3/disc');
+      let done = 0; prog.max = disc.total || 1;
+      for (const f of disc.files) {
+        const parts = f.path.split('/'); const name = parts.pop();
+        const dir = parts.length ? await sub(root, parts.join('/')) : root;
+        step = 'copiar ' + f.path + ' (¿cambió la carpeta del disco? vuelve a elegirla en el paso 2)';
+        const file = await f.h.getFile();
+        let skip = false;
+        try { const old = await (await dir.getFileHandle(name)).getFile(); skip = old.size === file.size; } catch (e) {}
+        if (skip) log('= ' + f.path + ' (ya estaba)');
+        else { await writeFile(dir, name, file); log('PSP/GAME/bt3/disc/' + f.path + '  ' + mb(file.size)); }
+        done += file.size; prog.value = done;
+        setSt('sGo', 'Disco: ' + mb(done) + ' de ' + mb(disc.total));
+      }
+    }
+    if ($('o_tex').checked) {
+      if (!disc) log('bt3psp.tex: sin carpeta del disco (paso 2), no se crea');
+      else { step = 'crear bt3psp.tex'; await buildTexPack(disc.files, home, prog); }
+    }
+    prog.value = prog.max;
+    setSt('sGo', 'Listo. Expulsa la Memory Stick con seguridad y arranca "BT3 PSP" desde el XMB. El log quedará en PSP/GAME/BT3PSP/log.txt.', 'ok');
+  } catch (e) {
+    setSt('sGo', 'Error al ' + step + ': ' + e.message, 'bad'); log('ERROR al ' + step + ': ' + e);
+  }
+  ready();
+};
+
+/* ---- bt3psp.tex: port/tools/bt3_psp_tex.py in the browser (same file format, same keys) ---- */
+function packSections(dv, size) {
+  if (dv.byteLength < 8) return null;
+  const n = dv.getUint32(0, true);
+  if (n === 0 || n > 4096 || 4 + 4 * n > Math.min(size, dv.byteLength)) return null;
+  const offs = [];
+  for (let k = 0; k < n; k++) { const o = dv.getUint32(4 + 4 * k, true); if (o >= size || (o & 3)) return null; offs.push(o); }
+  return offs[0] < 4 + 4 * n ? null : offs;
+}
+function bpeOk(dv, at, limit) {
+  if (at + 8 > Math.min(limit, dv.byteLength)) return false;
+  const raw = dv.getUint32(at, true), pk = dv.getUint32(at + 4, true);
+  return pk > 16 && pk <= limit - at - 8 && pk < raw && raw < pk * 64;
+}
+function bpe(u8, pos) {
+  const dv = new DataView(u8.buffer, u8.byteOffset);
+  const raw = dv.getUint32(pos, true), pk = dv.getUint32(pos + 4, true);
+  const out = new Uint8Array(raw), left = new Uint8Array(256), right = new Uint8Array(256), stack = new Uint8Array(256);
+  let p = pos + 8, end = p + pk, o = 0;
+  while (p < end) {
+    for (let i = 0; i < 256; i++) left[i] = i;
+    let c = 0, count = u8[p++];
+    for (;;) {
+      if (count > 127) { c += count - 127; count = 0; }
+      if (c === 256) break;
+      for (let i = 0; i <= count; i++, c++) { left[c] = u8[p++]; if (c !== left[c]) right[c] = u8[p++]; }
+      if (c === 256) break;
+      count = u8[p++];
+    }
+    let bs = (u8[p] << 8) | u8[p + 1]; p += 2;
+    let sp = 0;
+    for (;;) {
+      if (sp) c = stack[--sp];
+      else { if (bs-- === 0) break; c = u8[p++]; }
+      if (c === left[c]) { if (o >= raw) throw new Error('BPE'); out[o++] = c; }
+      else { stack[sp++] = right[c]; stack[sp++] = left[c]; }
+    }
+  }
+  if (o !== raw) throw new Error('BPE');
+  return out;
+}
+function* texFiles(sheet) {
+  const dv = new DataView(sheet.buffer, sheet.byteOffset, sheet.byteLength);
+  const offs = packSections(dv, sheet.length); if (!offs) return;
+  const ends = [...new Set([...offs, sheet.length])].sort((a, b) => a - b);
+  for (const o of offs) {
+    const len = ends[ends.indexOf(o) + 1] - o;
+    if (len < 0x20) continue;
+    const cnt = dv.getUint32(o, true), eo = dv.getUint32(o + 4, true) * 4;
+    if (!(cnt > 0 && cnt <= 512) || eo < 0x14 || eo + cnt * 0x40 > len) continue;
+    const ents = []; let ok = true;
+    for (let e = 0; e < cnt && ok; e++) {
+      const b = o + eo + e * 0x40;
+      const pix = dv.getUint32(b, true), clut = dv.getUint32(b + 4, true), ps = dv.getInt32(b + 8, true), cs = dv.getInt32(b + 12, true);
+      const pixblt = dv.getUint32(b + 0x18, true), t0lo = dv.getUint32(b + 0x30, true), t0hi = dv.getUint32(b + 0x34, true);
+      if (pix && (ps < 0x70 || (ps & 15) || pix * 4 + ps > len || (t0lo | t0hi) === 0)) ok = false;
+      if (clut && (cs < 0 || clut * 4 + cs > len)) ok = false;
+      ents.push({ pix, ps, pixblt, t0lo, t0hi });
+    }
+    if (ok) yield { base: o, ents };
+  }
+}
+const BLOCK32 = [[0,1,4,5,16,17,20,21],[2,3,6,7,18,19,22,23],[8,9,12,13,24,25,28,29],[10,11,14,15,26,27,30,31]];
+const BLOCK16 = [[0,2,8,10],[1,3,9,11],[4,6,12,14],[5,7,13,15],[16,18,24,26],[17,19,25,27],[20,22,28,30],[21,23,29,31]];
+const COL32 = [[0,1,4,5,8,9,12,13],[2,3,6,7,10,11,14,15],[16,17,20,21,24,25,28,29],[18,19,22,23,26,27,30,31],[32,33,36,37,40,41,44,45],[34,35,38,39,42,43,46,47],[48,49,52,53,56,57,60,61],[50,51,54,55,58,59,62,63]];
+const COL8F = [[0,4,16,20,32,36,48,52,2,6,18,22,34,38,50,54],[8,12,24,28,40,44,56,60,10,14,26,30,42,46,58,62],[33,37,49,53,1,5,17,21,35,39,51,55,3,7,19,23],[41,45,57,61,9,13,25,29,43,47,59,63,11,15,27,31]];
+const COL4F = [[0,8,32,40,64,72,96,104,2,10,34,42,66,74,98,106,4,12,36,44,68,76,100,108,6,14,38,46,70,78,102,110],[16,24,48,56,80,88,112,120,18,26,50,58,82,90,114,122,20,28,52,60,84,92,116,124,22,30,54,62,86,94,118,126],[65,73,97,105,1,9,33,41,67,75,99,107,3,11,35,43,69,77,101,109,5,13,37,45,71,79,103,111,7,15,39,47],[81,89,113,121,17,25,49,57,83,91,115,123,19,27,51,59,85,93,117,125,21,29,53,61,87,95,119,127,23,31,55,63]];
+const COL8 = [], COL4 = [];
+for (let y = 0; y < 16; y++) { COL8.push([]); COL4.push([]); for (let x = 0; x < 32; x++) { const sx = ((y >> 2) & 1) ? (x ^ 4) : x; if (x < 16) COL8[y].push(COL8F[y & 3][sx] + (y >> 2) * 64); COL4[y].push(COL4F[y & 3][sx] + (y >> 2) * 128); } }
+function gsAddr(psm, bw, x, y) {
+  bw = Math.max(bw, 1);
+  if (psm === 0x13) return (((((y >> 1) & ~0x1F) * (bw >> 1) + ((x >> 2) & ~0x1F) + BLOCK32[(y >> 4) & 3][(x >> 4) & 7]) << 8) + COL8[y & 15][x & 15]) >>> 0;
+  if (psm === 0x14) return (((((y >> 2) & ~0x1F) * (bw >> 1) + ((x >> 2) & ~0x1F) + BLOCK16[(y >> 4) & 7][(x >> 5) & 3]) * 512) + COL4[y & 15][x & 31]);
+  return ((((y & ~0x1F) * bw + ((x >> 1) & ~0x1F) + BLOCK32[(y >> 3) & 3][(x >> 3) & 7]) << 6) + COL32[y & 7][x & 7]) >>> 0;
+}
+const VRAM = new Uint8Array(1 << 22), VRAM32 = new Uint32Array(VRAM.buffer);
+function throughGs(pk, pixblt, t0lo, t0hi) {
+  const dv = new DataView(pk.buffer, pk.byteOffset, pk.byteLength);
+  const dbw = pixblt & 0x3F, dpsm = (pixblt >>> 8) & 0x3F;
+  const tbw = (t0lo >>> 14) & 0x3F, psm = (t0lo >>> 20) & 0x3F, tw = 1 << ((t0lo >>> 26) & 15), th = 1 << (((t0lo >>> 30) | (t0hi << 2)) & 15);
+  let p = (dv.getUint32(12, true) >>> 24) === 0x50 || (dv.getUint32(12, true) >>> 24) === 0x51 ? 16 : 0;
+  const glo = dv.getUint32(p, true), ghi = dv.getUint32(p + 4, true);
+  const nloop = glo & 0x7FFF, flg = (ghi >>> 26) & 3, nreg = (ghi >>> 28) || 16;
+  const regs = {}; p += 16;
+  if (flg === 0) for (let i = 0; i < nloop * nreg; i++, p += 16) regs[dv.getUint8(p + 8)] = [dv.getUint32(p, true), dv.getUint32(p + 4, true)];
+  if (((dv.getUint32(p + 4, true) >>> 26) & 3) !== 2) return null;
+  const qw = dv.getUint32(p, true) & 0x7FFF, data = p + 16;
+  const pos = regs[0x51] || [0, 0], reg = regs[0x52] || [0, 0];
+  const dx = pos[1] & 0x7FF, dy = (pos[1] >>> 16) & 0x7FF, rw = reg[0] & 0xFFF, rh = reg[1] & 0xFFF;
+  if (!rw || !rh || tw > 1024 || th > 1024 || data + qw * 16 > pk.length) return null;
+  VRAM.fill(0);
+  if (dpsm === 0 || dpsm === 1) {
+    let i = data;
+    for (let y = 0; y < rh; y++) for (let x = 0; x < rw; x++, i += 4) if (i + 4 <= pk.length) VRAM32[gsAddr(0, dbw, dx + x, dy + y) & 0xFFFFF] = dv.getUint32(i, true);
+  } else if (dpsm === 0x13) {
+    let i = data;
+    for (let y = 0; y < rh; y++) for (let x = 0; x < rw; x++, i++) if (i < pk.length) VRAM[gsAddr(0x13, dbw, dx + x, dy + y) & 0x3FFFFF] = pk[i];
+  } else return null;
+  if (psm === 0x13) { const o = new Uint8Array(tw * th); for (let y = 0; y < th; y++) for (let x = 0; x < tw; x++) o[y * tw + x] = VRAM[gsAddr(0x13, tbw, x, y) & 0x3FFFFF]; return { img: o, psm, tw, th }; }
+  if (psm === 0x14) { const o = new Uint8Array(tw * th); for (let y = 0; y < th; y++) for (let x = 0; x < tw; x++) { const a = gsAddr(0x14, tbw, x, y); o[y * tw + x] = (VRAM[(a >>> 1) & 0x3FFFFF] >> ((a & 1) * 4)) & 15; } return { img: o, psm, tw, th }; }
+  if (psm === 0 || psm === 1) { const o = new Uint32Array(tw * th); for (let y = 0; y < th; y++) for (let x = 0; x < tw; x++) { let v = VRAM32[gsAddr(0, tbw, x, y) & 0xFFFFF]; if (psm === 1) v = (v | 0x80000000) >>> 0; o[y * tw + x] = v; } return { img: o, psm, tw, th }; }
+  return null;
+}
+/* PSP resolution: every texture halved until both sides fit the chosen limit (o_texmax) */
+function halve(t) { /* NFSU2 to_clut8: indices by nearest, colours by a 2x2 box */
+  const w = Math.max(1, t.tw >> 1), h = Math.max(1, t.th >> 1), o = new t.img.constructor(w * h);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const i = (y * 2) * t.tw + x * 2;
+    if (t.psm === 0x13 || t.psm === 0x14) { o[y * w + x] = t.img[i]; continue; }
+    const q = [t.img[i], t.img[i + (x * 2 + 1 < t.tw ? 1 : 0)], t.img[i + (y * 2 + 1 < t.th ? t.tw : 0)], t.img[i + (x * 2 + 1 < t.tw ? 1 : 0) + (y * 2 + 1 < t.th ? t.tw : 0)]];
+    let v = 0;
+    for (let c = 0; c < 32; c += 8) v |= (((q[0] >>> c & 255) + (q[1] >>> c & 255) + (q[2] >>> c & 255) + (q[3] >>> c & 255) + 2) >> 2) << c;
+    o[y * w + x] = v >>> 0;
+  }
+  return { img: o, psm: t.psm, tw: w, th: h };
+}
+function toPsp(t, limit) {
+  let shift = 0;
+  while (Math.max(t.tw, t.th) > limit) { t = halve(t); shift++; }
+  const fmt = t.psm === 0x14 ? 2 : t.psm === 0x13 ? 1 : 0, minw = fmt === 2 ? 32 : fmt === 1 ? 16 : 4;
+  const w = Math.max(t.tw, minw), h = (t.th + 7) & ~7, bpp = fmt === 2 ? 0.5 : fmt === 1 ? 1 : 4, row = w * bpp;
+  const lin = new Uint8Array(row * h), l32 = fmt === 0 ? new Uint32Array(lin.buffer) : null;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const v = t.img[Math.min(y, t.th - 1) * t.tw + Math.min(x, t.tw - 1)];
+    if (fmt === 2) lin[y * row + (x >> 1)] |= (x & 1) ? v << 4 : v;
+    else if (fmt === 1) lin[y * row + x] = v;
+    else { const a = Math.min(((v >>> 24) & 0xFF) * 2, 255); l32[y * w + x] = ((v & 0xFFFFFF) | (a << 24)) >>> 0; }
+  }
+  const out = new Uint8Array(lin.length); let k = 0;
+  for (let y = 0; y < h; y += 8) for (let x = 0; x < row; x += 16) for (let r = 0; r < 8; r++) { out.set(lin.subarray((y + r) * row + x, (y + r) * row + x + 16), k); k += 16; }
+  return { fmt, w, h, data: out, shift };
+}
+function fnv64(u8) { /* FNV-1a 64 in two 32-bit halves (the prime is 2^40 + 0x1B3) */
+  let lo = 0x84222325, hi = 0xCBF29CE4;
+  for (let i = 0; i < u8.length; i++) {
+    lo = (lo ^ u8[i]) >>> 0;
+    const m = lo * 0x1B3, ml = m % 4294967296, carry = Math.floor(m / 4294967296);
+    hi = (Math.imul(hi, 0x1B3) + carry + (lo << 8)) >>> 0;
+    lo = ml >>> 0;
+  }
+  return [hi, lo];
+}
+async function buildTexPack(files, home, prog) {
+  const afs = files.filter(f => /(^|\/)pzs3us[12]\.afs$/i.test(f.path)).sort((a, b) => a.path.localeCompare(b.path));
+  if (!afs.length) { log('bt3psp.tex: no se encontró pzs3us1.afs en la carpeta del disco'); return; }
+  const fh = await home.getFileHandle('bt3psp.tex', { create: true }), w = await fh.createWritable();
+  const seen = new Set(), index = []; let at = 0, sheets = 0, skipped = 0;
+  const DATA = 64;
+  for (const a of afs) {
+    step = 'leer ' + a.path + ' para bt3psp.tex';
+    const file = await a.h.getFile();
+    const head = new DataView(await file.slice(0, 8).arrayBuffer()), n = head.getUint32(4, true);
+    const toc = new DataView(await file.slice(8, 8 + 8 * n).arrayBuffer());
+    prog.max = n; prog.value = 0;
+    for (let i = 0; i < n; i++) {
+      const off = toc.getUint32(8 * i, true), size = toc.getUint32(8 * i + 4, true);
+      if (i % 20 === 0) { prog.value = i; setSt('sGo', `Texturas: ${a.path} ${i}/${n}, ${sheets} hojas, ${index.length} texturas, ${mb(at)}`); }
+      if (size < 64) continue;
+      const hd = new DataView(await file.slice(off, off + Math.min(size, 16384)).arrayBuffer());
+      const secs = packSections(hd, size);
+      if (!secs || (secs[0] + 8 <= hd.byteLength && !bpeOk(hd, secs[0], size))) continue;
+      const buf = new Uint8Array(await file.slice(off, off + size).arrayBuffer()), bdv = new DataView(buf.buffer);
+      if (!secs.every(o => bpeOk(bdv, o, size))) continue;
+      for (const o of secs) {
+        let sheet;
+        try { sheet = bpe(buf, o); } catch (e) { continue; }
+        sheets++;
+        for (const tf of texFiles(sheet)) for (const e of tf.ents) {
+          if (!e.pix) continue;
+          const pk = sheet.subarray(tf.base + e.pix * 4, tf.base + e.pix * 4 + e.ps);
+          const key = fnv64(pk), ks = key[0] + ':' + key[1];
+          if (seen.has(ks)) continue;
+          seen.add(ks);
+          let t = null;
+          try { t = throughGs(pk, e.pixblt, e.t0lo, e.t0hi); } catch (err) { t = null; }
+          if (!t) { skipped++; continue; }
+          const c = toPsp(t, +$('o_texmax').value || 64), pad = (64 - (c.data.length & 63)) & 63;
+          await w.write({ type: 'write', position: DATA + at, data: c.data });
+          if (pad) await w.write({ type: 'write', position: DATA + at + c.data.length, data: new Uint8Array(pad) });
+          index.push({ hi: key[0], lo: key[1], off: at, n: c.data.length, w: c.w, h: c.h, tw: t.tw, th: t.th, fmt: c.fmt, shift: c.shift }); /* tw, th: the PS2 size; shift: the halvings (the EBOOT scales the UVs by it) */
+          at += c.data.length + pad;
+        }
+      }
+    }
+  }
+  index.sort((x, y) => x.hi - y.hi || x.lo - y.lo);
+  const ib = new DataView(new ArrayBuffer(32 * index.length));
+  index.forEach((e, k) => { const b = 32 * k; ib.setUint32(b, e.lo, true); ib.setUint32(b + 4, e.hi, true); ib.setUint32(b + 8, e.off, true); ib.setUint32(b + 12, e.n, true);
+    ib.setUint16(b + 16, e.w, true); ib.setUint16(b + 18, e.h, true); ib.setUint16(b + 20, e.tw, true); ib.setUint16(b + 22, e.th, true); ib.setUint8(b + 24, e.fmt); ib.setUint8(b + 25, 1); ib.setUint8(b + 26, e.shift); });
+  await w.write({ type: 'write', position: DATA + at, data: ib });
+  const hdr = new DataView(new ArrayBuffer(DATA));
+  [0x54335442, 2, index.length, DATA + at, DATA].forEach((v, k) => hdr.setUint32(4 * k, v, true)); /* 'BT3T', version, count, index, data */
+  await w.write({ type: 'write', position: 0, data: hdr });
+  await w.close();
+  log(`PSP/GAME/BT3PSP/bt3psp.tex  ${index.length} texturas de ${sheets} hojas, ${mb(DATA + at + ib.byteLength)} (${skipped} en formatos que convierte la consola)`);
+}
+</script>
+</body>
+</html>

@@ -21,34 +21,185 @@
 #include <string.h>
 #include "vita_dat.h"
 
-#define HEAP_SIZE (0x02000000u - 0x003BE000u)
+#ifndef HOME
+#define HOME "ms0:/PSP/GAME/BT3PSP"
+#endif
 #define HEAP_SKIP 0x730u /* the PS2's first address is 0x3BE730: keep its position within a page */
+
+/* The game's own heap (src/sys/heap.c, Heap_Create) on the PS2: 0x1EFB000 - 0x3BE71C = 27.2 MB. */
+#define GAME_HEAP_FULL ((uint32_t)(0x1EFB000 - 0x3BE71C))
+/* The smallest heap worth starting with; below this the menus cannot load. A guess until the log's
+   "heap peak" lines say how much the game really uses. */
+#define GAME_HEAP_MIN (8u << 20)
 
 unsigned char gPortHw[0x10000] __attribute__((aligned(16)));   /* stands for 0x10000000..0x1000FFFF */
 unsigned char gPortGsReg[0x2000] __attribute__((aligned(16))); /* stands for 0x12000000..0x12001FFF */
 volatile uint32_t gPortDataStripped = 1;                       /* the tables come from the disc, always */
 uint32_t gVitaHeapBase, gVitaHeapUsed;
 
+/* Memory profile (the NFSU2 idea): measured at start, "extended" when the PS2's whole heap fits (2000/3000, or a
+   1000 with ARK's extra memory), "compact" otherwise; the game heap then takes what is left. */
+int gPspMemCompact;
+uint32_t gPspGameStack = 4u << 20;
+static uint32_t sHeapSize, sGameHeap;
 static uint32_t sHeapNext, sHeapEnd;
+static uint8_t *sVolBase;
+static uint32_t sVolSize, sVolUsed;
 extern void Vita_Fatal(const char *fmt, ...);
+extern void Vita_Log(const char *fmt, ...);
+extern uint32_t gPortHeapUsedNow, gPortHeapUsedPeak, gPortHeapFails;
+int sceKernelVolatileMemTryLock(int unk, void **ptr, int *size);
+extern uint32_t *gPspGsVram;
+static uint32_t sVolErr, sVolErr2;
+
+/* The 4 MB at 0x08400000 that the system lends a game while no suspend image is kept: the emulated GS memory
+   goes there (gs_core.c), which frees 4 MB of the main memory. NULL when the lock is refused or the space is taken. */
+void *Psp_VolatileAlloc(uint32_t n) {
+    uint8_t *p;
+    n = (n + 63u) & ~63u;
+    if (sVolBase == NULL || sVolUsed + n > sVolSize) {
+        return NULL;
+    }
+    p = sVolBase + sVolUsed;
+    sVolUsed += n;
+    return p;
+}
+
+static uint32_t read_number(const char *path, uint32_t def) {
+    char t[16] = {0};
+    SceUID f = sceIoOpen(path, SCE_O_RDONLY, 0);
+    if (f < 0) {
+        return def;
+    }
+    sceIoRead(f, t, sizeof(t) - 1);
+    sceIoClose(f);
+    return atoi(t) > 0 ? (uint32_t)atoi(t) : def;
+}
+
+/* What the main memory still has to hold after the heap: the game's stack, the GE's texture cache, and room for the C library's later allocations, the threads and the file buffers. */
+#define AFTER_HEAP_SLACK (512u << 10) /* the log showed ~1.8 MB never used with 1.5 MB here */
+#define TEX_CACHE (512u << 10)
 
 void Vita_MapMemory(int cdram) {
-    uint32_t size = (HEAP_SIZE + 0xFFFFu) & ~0xFFFFu;
+    uint32_t largest, after, want;
     SceUID id;
     void *base = NULL;
+    int vs = 0;
 
     (void)cdram;
-    id = sceKernelAllocPartitionMemory(PSP_MEMORY_PARTITION_USER, "bt3_heap", PSP_SMEM_Low, size, NULL);
+    {
+        /* two ways in: the power service's and the suspend service's (one of them may be refused on some firmwares) */
+        int r1 = 0, r2 = 0; /* scePowerVolatileMemLock is not in this PSPSDK: the suspend service only */
+        sVolBase = NULL;
+        {
+            sVolBase = NULL; vs = 0;
+            r2 = sceKernelVolatileMemTryLock(0, (void **)&sVolBase, &vs);
+        }
+        if (sVolBase != NULL && vs > 0) {
+            sVolSize = (uint32_t)vs;
+        } else {
+            sVolBase = NULL;
+        }
+        sVolErr = (uint32_t)(r1 < 0 ? r1 : 0); sVolErr2 = (uint32_t)(r2 < 0 ? r2 : 0);
+        Vita_Log("volatile memory: power lock 0x%08X, suspend lock 0x%08X, %u KB at %p\n", (unsigned)r1, (unsigned)r2, sVolSize >> 10, (void *)sVolBase);
+    }
+    /* the GS memory the renderer emulates (4 MB): into the volatile memory when there is one, else the main memory */
+    gPspGsVram = (uint32_t *)Psp_VolatileAlloc(4u << 20);
+    if (gPspGsVram == NULL) {
+        SceUID g = sceKernelAllocPartitionMemory(PSP_MEMORY_PARTITION_USER, "bt3_gsmem", PSP_SMEM_High, (4u << 20) + 64u, NULL);
+        if (g < 0) {
+            Vita_Fatal("no memory for the GS memory (4 MB): error 0x%08X", (unsigned)g);
+        }
+        gPspGsVram = (uint32_t *)(((uintptr_t)sceKernelGetBlockHeadAddr(g) + 63u) & ~(uintptr_t)63u);
+    }
+    memset(gPspGsVram, 0, 4u << 20);
+    largest = (uint32_t)sceKernelMaxFreeMemSize();
+    /* stack.txt: the game thread's stack in KB (default 4096, compact 1024) */
+    after = (4u << 20) + AFTER_HEAP_SLACK + TEX_CACHE;
+    want = HEAP_SKIP + GAME_HEAP_FULL + 0x10000u;
+    gPspMemCompact = largest < want + after;
+    if (gPspMemCompact) {
+        gPspGameStack = 256u << 10; /* the game used ~10 KB of its stack in the menus */
+    }
+    gPspGameStack = read_number(HOME "/stack.txt", gPspGameStack >> 10) << 10;
+    if (gPspGameStack < (128u << 10)) {
+        gPspGameStack = 128u << 10;
+    }
+    after = gPspGameStack + AFTER_HEAP_SLACK + TEX_CACHE;
+    if (gPspMemCompact) {
+        want = largest > after ? largest - after : 0u;
+    }
+    sHeapSize = want & ~0xFFFFu;
+    sGameHeap = sHeapSize > HEAP_SKIP + 0x10000u ? sHeapSize - HEAP_SKIP - 0x10000u : 0u;
+    if (sGameHeap > GAME_HEAP_FULL) {
+        sGameHeap = GAME_HEAP_FULL;
+    }
+    Vita_Log("memory profile: %s; largest free block %u KB, volatile memory %u KB%s, game heap %u of %u KB, stack %u KB\n",
+             gPspMemCompact ? "COMPACT (less memory than the PS2's heap needs)" : "extended", largest >> 10, sVolSize >> 10,
+             sVolBase ? "" : " (refused)", sGameHeap >> 10, GAME_HEAP_FULL >> 10, gPspGameStack >> 10);
+    if (sGameHeap < GAME_HEAP_MIN) {
+        Vita_Fatal("not enough memory for the game heap: %u KB free, at least %u KB needed\nvolatile memory %u KB (errors 0x%08X 0x%08X)\n(a PSP-1000 gives programs 24 MB; ARK's extra memory makes it 52 MB)",
+                   largest >> 10, (GAME_HEAP_MIN + after) >> 10, sVolSize >> 10, (unsigned)sVolErr, (unsigned)sVolErr2);
+    }
+    id = sceKernelAllocPartitionMemory(PSP_MEMORY_PARTITION_USER, "bt3_heap", PSP_SMEM_Low, sHeapSize, NULL);
     if (id >= 0) {
         base = sceKernelGetBlockHeadAddr(id);
     }
     if (id < 0 || base == NULL) {
-        Vita_Fatal("no memory for the game heap (%u MB): error 0x%08X\nIs ARK's extra memory on?", size >> 20, (unsigned)id);
+        Vita_Fatal("no memory for the game heap (%u KB): error 0x%08X", sHeapSize >> 10, (unsigned)id);
     }
-    memset(base, 0, size);
+    memset(base, 0, sHeapSize);
     gVitaHeapBase = (uint32_t)(uintptr_t)base;
     sHeapNext = gVitaHeapBase + HEAP_SKIP;
-    sHeapEnd = gVitaHeapBase + HEAP_SIZE;
+    sHeapEnd = gVitaHeapBase + sHeapSize;
+}
+
+void Port_HeapBig(int32_t size, void *data, void *caller) {
+    extern void Vita_LogFlush(void);
+    Vita_Log("game heap: %d KB at %p for %p; in use %u KB\n", (int)(size >> 10), data, caller, gPortHeapUsedNow >> 10);
+    Vita_LogFlush(); /* (at once: a freeze right after it left nothing in the log) */
+}
+
+/* Before a screen that needs room (the character select, a battle's load): what the port itself keeps is let go. The
+   game's own data of the screen before is the game's to free (it does, when the next screen starts). */
+void Psp_FreeMemory(const char *why) {
+    extern void Vita_LogFlush(void);
+    extern unsigned Heap_GetLargestFree(void), Heap_GetFreeSize(void);
+    extern unsigned Psp_GuFreeAll(void);
+    extern int Psp_LazyTrim(void);
+    extern unsigned gPspLazyCacheBytes;
+    unsigned used0 = gPortHeapUsedNow, free0 = Heap_GetFreeSize(), big0 = Heap_GetLargestFree(), kept0 = gPspLazyCacheBytes, tex;
+    int copies;
+    tex = Psp_GuFreeAll();
+    copies = Psp_LazyTrim();
+    Vita_Log("memory let go before %s: %u KB of GE textures forgotten, %d decoded pictures (%u KB) given back; game heap in use %u KB, free %u -> %u KB, "
+             "largest free block %u -> %u KB; system free %u KB\n", why, tex >> 10, copies, (kept0 - gPspLazyCacheBytes) >> 10, used0 >> 10, free0 >> 10,
+             Heap_GetFreeSize() >> 10, big0 >> 10, Heap_GetLargestFree() >> 10, (unsigned)sceKernelTotalFreeMemSize() >> 10);
+    Vita_LogFlush();
+}
+
+/* Heap_Free of a block of 1 MB or more: the game leaves a screen. */
+void Port_HeapFreed(int32_t size) {
+    extern void Vita_LogFlush(void);
+    Vita_Log("game heap: %d KB freed; in use %u KB\n", (int)(size >> 10), gPortHeapUsedNow >> 10);
+    Vita_LogFlush();
+}
+
+/* Heap_Create's size (src/sys/heap.c, PORT_PSP). */
+int32_t Port_GameHeapSize(void) {
+    return (int32_t)sGameHeap;
+}
+
+/* A request the game heap could not meet: the PS2's game never sees that, so on a compact heap this is the first
+   thing to look for in the log after a crash. */
+void Port_HeapAllocFailed(int32_t size, int32_t heap) {
+    if (gPortHeapFails <= 20u) {
+        extern void Vita_LogFlush(void);
+        extern unsigned Heap_GetLargestFree(void), Heap_GetFreeSize(void);
+        Vita_Log("game heap FULL: %d bytes (heap %d) refused for %p; in use %u KB, peak %u KB of %u KB; free %u KB, largest free block %u KB\n", (int)size, (int)heap,
+                 __builtin_return_address(0), gPortHeapUsedNow >> 10, gPortHeapUsedPeak >> 10, sGameHeap >> 10, Heap_GetFreeSize() >> 10, Heap_GetLargestFree() >> 10);
+        Vita_LogFlush(); /* (what the game does with the NULL may freeze the console before the heartbeat writes) */
+    }
 }
 
 /* The game's malloc (port_compat.h renames it): a bump allocator over the heap block, 16-byte aligned. */
@@ -88,14 +239,14 @@ static void *scr_alloc(size_t n) {
     }
     p = (uint8_t *)(uintptr_t)gVitaHeapBase + sScrUsed;
     sScrUsed += (n + 63u) & ~(size_t)63u;
-    if (sScrUsed > HEAP_SIZE / 2) {
+    if (sScrUsed > sHeapSize / 2) {
         Vita_Fatal("start-up buffers do not fit (%u bytes)", (unsigned)sScrUsed);
     }
     return p;
 }
 
 static void scr_free(void *p) {
-    if (gVitaHeapBase == 0 || (uintptr_t)p < gVitaHeapBase || (uintptr_t)p >= gVitaHeapBase + HEAP_SIZE) {
+    if (gVitaHeapBase == 0 || (uintptr_t)p < gVitaHeapBase || (uintptr_t)p >= gVitaHeapBase + sHeapSize) {
         free(p);
     }
 }

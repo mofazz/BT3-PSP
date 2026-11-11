@@ -250,6 +250,13 @@ int ADXF_ReadNw(void *h, int nsct, void *buf) {
         f->stat = STAT_READEND;
         return 0;
     }
+    if (buf == NULL) { /* the game heap was full and the game did not look: a read to address 0 froze the console */
+        extern void Vita_Fatal(const char *fmt, ...);
+        extern uint32_t gPortHeapUsedNow;
+        extern int32_t Port_GameHeapSize(void);
+        Vita_Fatal("Out of memory: the game has no room for a file of %d KB\n(game heap %u of %d KB in use).\nlog.txt lists what filled it (\"game heap:\" lines).",
+                   (int)(f->size >> 10), (unsigned)(gPortHeapUsedNow >> 10), (int)(Port_GameHeapSize() >> 10));
+    }
     want = (uint32_t)nsct * SECTOR;
     have = pos < f->size ? f->size - pos : 0;
     if (have > want) {
@@ -257,6 +264,9 @@ int ADXF_ReadNw(void *h, int nsct, void *buf) {
     }
     {
         unsigned long long t0 = sceKernelGetProcessTimeWide(), dt;
+        extern volatile int gPspSect;
+        int sect = gPspSect;
+        gPspSect = 4; /* the profile's "disc" */
         if (!f->owned) {
             f->fd = sPart[f->pt].fd; /* (the archive's, which may have been opened again) */
         }
@@ -265,6 +275,7 @@ int ADXF_ReadNw(void *h, int nsct, void *buf) {
             f->fd = sPart[f->pt].fd;
             got = sceIoPread(f->fd, buf, have, (SceOff)f->base + pos);
         }
+        gPspSect = sect;
         dt = sceKernelGetProcessTimeWide() - t0;
         gVitaFileReads++;
         gVitaFileUs += dt;

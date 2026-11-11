@@ -36,7 +36,20 @@ void Dma_AddData(void *src, s32 size) {
 
 /* Appends a REF tag: sends `size` bytes that live at `addr` without copying them. */
 void Dma_AddRef(void *addr, s32 size) {
-    u32 *tag = gDmaCur;
+    u32 *tag;
+#ifdef PORT_PSP
+    {   /* port/psp: a lazy sheet's picture (psp_lazy.c), a texture bt3psp.tex has (psp_pack.c: a marker, no upload) */
+        extern int Psp_LazyRef(void *addr, int bytes, void **sub);
+        extern int Psp_PackLookup(const void *data, int size, const void *ident);
+        extern void Psp_PackEmit(int idx);
+        void *sub = NULL;
+        int idx;
+        if (Psp_LazyRef(addr, size, &sub)) { return; }
+        if (sub != NULL) { addr = sub; /* the picture's decoded copy (psp_lazy.c) */
+        } else if ((idx = Psp_PackLookup(addr, size, addr)) >= 0) { Psp_PackEmit(idx); return; }
+    }
+#endif
+    tag = gDmaCur;
 
     tag[0] = DMA_TAG_REF + size / 16;
     tag[1] = (u32)addr;
@@ -98,6 +111,9 @@ void Dma_Flush(void) {
         }
         gVitaDmaFlush = 1;
         Dma_SendVif1(gDmaBuf[gDmaBufIdx]);
+#ifdef PORT_PSP
+        { extern void Psp_LazyFlushed(void); Psp_LazyFlushed(); }
+#endif
         gDmaBufIdx ^= 1;
         if (gVitaTriple) {
             t = gDmaBuf[gDmaBufIdx];

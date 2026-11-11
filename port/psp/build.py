@@ -38,7 +38,7 @@ vb.P = str(pathlib.Path(PSPDEV) / "bin/psp-")
 vb.OBJ = ROOT / "port/build/obj_psp"
 vb.OUT = ROOT / "port/build/psp"
 vb.GEN = ROOT / "port/build/gen/psp"
-OPT = os.environ.get("BT3_PSP_OPT", "-O2")
+OPT = os.environ.get("BT3_PSP_OPT", "-Os")  # -Os: the PSP-1000 needs every KB for the game heap
 TRACE = os.environ.get("BT3_PSP_TRACE", "0") == "1"   # call recorder for crash hunting (psp_main.c: crumbs.txt); BT3_PSP_TRACE=1 switches it on (it slows the game a lot)
 
 # PORT_VITA is the shared code's name for "32-bit target without the PS2's address space" (hardware registers
@@ -65,7 +65,7 @@ def port_sources():
     out = [(ROOT / "src/port/vu0_a.c", "vu0"), (ROOT / "src/port/vu0_b.c", "vu0")]
     for n in ("gs_marker", "headless", "mathf_pc", "plat_gs", "plat_mc", "plat_stub", "plat_sys", "softfloat_ps2"):
         out.append((S / (n + ".c"), "ee"))
-    for n in ("psp_main", "psp_mem", "psp_file", "psp_float", "psp_glue"):
+    for n in ("psp_main", "psp_mem", "psp_file", "psp_float", "psp_glue", "psp_lazy", "psp_pack"):
         out.append((PS / (n + ".c"), "hard"))
     out.append((vb.GEN / "vita_dat.c", "hard"))
     out.append((PS / "psp_gs.c", "hard"))
@@ -82,7 +82,7 @@ def port_sources():
                      # no third list buffer: Dma_Flush (src/sys/dma.c) swaps in Port_DmaSpare's buffer when this is 1, and without the Vita's
                      # renderer thread there is no spare buffer (it returned 0, so the game's list pointer became 0 after the first flush)
                      ("int gVitaTriple = 1;", "int gVitaTriple = 0;"),
-                     ("#define SNAP_WORDS ((1024u << 10) / 4)", "#define SNAP_WORDS ((256u << 10) / 4)")):
+                     ("#define SNAP_WORDS ((1024u << 10) / 4)", "#define SNAP_WORDS ((4u << 10) / 4)")):
         assert old in src, old
         src = src.replace(old, new)
     # (every use of Port_GsVif1Chain inside gs_core.c goes to the _real one; the wrapper at the end is the exported function and keeps a time)
@@ -92,7 +92,11 @@ extern unsigned long long gPspGsUs;
 extern unsigned gPspGsCalls;
 void Port_GsVif1Chain(uint32_t tadr, int tte) {
     unsigned long long t = sceKernelGetProcessTimeWide();
+    extern volatile int gPspSect;
+    int sect = gPspSect;
+    gPspSect = 5;
     Port_GsVif1Chain_real(tadr, tte);
+    gPspSect = sect;
     gPspGsUs += sceKernelGetProcessTimeWide() - t;
     gPspGsCalls++;
 }
