@@ -1,0 +1,3 @@
+# Heap_Create (0x254F80) mallocs 0x1EFB000 - 0x3BE71C at once (the whole PS2 RAM): the top follows the guest RAM end
+# (bt3_heap_top, src/pack_main.c), so a PSP window below 32 MB still gets a heap
+fn_00254f80	c->r[16].d[0] = (c->r[16].d[0] | 0xb000ull);	c->r[16].d[0] = (c->r[16].d[0] | 0xb000ull); { extern uint32_t bt3_heap_top(uint32_t); c->r[16].d[0] = SX32(bt3_heap_top((uint32_t)c->r[16].d[0])); }
