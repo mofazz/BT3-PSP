@@ -1,0 +1,12 @@
+# Sony hardware-library functions of SLUS_216.78 v1.00 (address name), from the Tenkaichi3Decomp symbol
+# files; read by trapset.py when no --decomp-config is given
+002930b8 sceGsResetGraph
+00293258 sceGsResetPath
+002932c0 sceGsPutDrawEnv
+002933a8 sceGsSetDefDBuff
+00293640 sceGsSwapDBuff
+002936a0 sceGsSyncV
+00293738 sceGsSyncPath
+00293a50 sceGsSetDefStoreImage
+00293b90 sceGsExecStoreImage
+00294220 sceGsSyncVCallback
