@@ -63,6 +63,25 @@ ruido y la neblina. Ahora las páginas de un destino no dibujado (solo las filas
 - la textura en uso queda protegida tras un reinicio de lista;
 - la "row hint" se reinicia en cada lote 3D.
 
+### 7. La compilación `--fast` falla en `prepare_gen`
+`build_psp.bat <ISO> <salida> --fast --restart` paraba con:
+
+```
+text patches that did not apply exactly once: fn_00254f80: 'r16 = (r16 | 0xb000ull);' found 0 times
+```
+
+La compilación normal funcionaba. `textpatch_fast.tsv` engancha `bt3_heap_top` en `Heap_Create` (`fn_00254f80`)
+buscando el texto exacto de una línea del C generado. En el modo ABI (`v5s3`) esa línea sale como
+`r16 = (int32_t)((((uint64_t)(int64_t)r16) | 0xb000ull));`, así que el parche no encontraba nada.
+
+**Solución:** primero se cambió el patrón de `textpatch_fast.tsv` por la forma `int32_t` que genera `v5s3`. La
+solución que queda en el kit es otra: `Heap_Create` se traduce de forma exacta (lista `non_abi`), la línea vuelve
+a salir como `r16 = (r16 | 0xb000ull);` y `textpatch_fast.tsv` usa otra vez el patrón original.
+
+**Para evitar que vuelva a pasar:** cada parche de texto tiene que aparecer exactamente una vez. Si se cambia el modo
+de traducción o la lista `non_abi`, busca la línea real en `work_fast/trans/*.c` y ajusta el patrón. Una compilación
+`--fast` correcta muestra `1 text patches` en la línea `prepare_gen:` del log.
+
 ---
 
 ## Pendientes
