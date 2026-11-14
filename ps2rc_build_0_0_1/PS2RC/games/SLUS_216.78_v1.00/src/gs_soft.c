@@ -784,6 +784,9 @@ static uint32_t up_hash_us, up_write_us;   /* upload cost split (bench): hashing
 uint64_t gs_stat_uploads(void);
 static void trx_data(const uint8_t *q, uint32_t nbytes)
 {
+#ifdef HLE_PSP
+    PZ_SCOPE(gs_trx);
+#endif
     if (!trx_active) return;
     uint32_t dpsm = (uint32_t)(reg[0x50] >> 56) & 63;
     stat_uploads += nbytes;
@@ -1008,6 +1011,9 @@ static const uint8_t *direct_guest(uint32_t i, uint32_t k)
    per qword decoded the transfer registers 16 bytes at a time) */
 static void gif_block(const uint8_t *q, uint32_t nq, int guest)
 {
+#ifdef HLE_PSP
+    PZ_SCOPE(gs_gif);
+#endif
 #ifdef HLE_PSP
     SceUInt32 tg = sceKernelGetSystemTimeLow();
 #endif
@@ -1461,6 +1467,9 @@ void hle_pack_gfx_dma(int ch, uint32_t chcr, uint32_t madr, uint32_t qwc, uint32
 #endif
     uint32_t vn = 0;
     st_ch[ch]++;
+#ifdef HLE_PSP
+    hle_pz_scope pz_g = hle_pz_scope_begin(PZ_gs_gather);   /* the chain gathered into the VIF buffer */
+#endif
     dbg_dma = dbg_dma_at && vblanks == dbg_dma_at;
     if (dbg_dma) LOG("dmadump: kick ch %d chcr %08x madr %08x qwc %u tadr %08x\n", ch, chcr, madr, qwc, tadr);
     int mode = (int)((chcr >> 2) & 3);
@@ -1501,6 +1510,7 @@ void hle_pack_gfx_dma(int ch, uint32_t chcr, uint32_t madr, uint32_t qwc, uint32
         }
     }
 #ifdef HLE_PSP
+    hle_pz_scope_end(&pz_g);
     SceUInt32 tv = sceKernelGetSystemTimeLow();
 #endif
     if (ch == 1 && vn > vbuf_start) vif_stream(vbuf, vbuf_start, vn, 1);

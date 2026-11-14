@@ -69,6 +69,7 @@ static uint32_t nat_col(float r, float g, float b, float a)   /* VU colour float
 
 /* the GE state for the current PRIM / context, then the projection C x S (S = 4 columns at VU qa); returns the
    primitive type, -1 = not drawn */
+static const GeTex *nat_tex;                          /* the open batch's texture (gs_3d2d) */
 static ScePspFMatrix4 nat_proj;                       /* the projection of the open batch (CPU clipping) */
 
 /* the GE drops a whole triangle when a vertex lands outside its 4096-pixel guard band (the stage's ground near the
@@ -174,10 +175,44 @@ static void nat_tri_clip(const GeV3 *a, const GeV3 *b, const GeV3 *c)
 }
 /* draws n vertices of GS primitive prim (3 list, 4 strip, 5 fan) already in list memory v: as they are when every
    vertex is inside the band, else cut as above */
+/* ps2rc.cfg gs_3d2d=1 (experiment, 0.0.6): the stage's 3D triangles projected by the CPU and drawn in through mode
+   (GU_TRANSFORM_2D: no GE transform, no GE clipping - the path the 2D sky and HUD already take). Textures are affine
+   there (no perspective correction), so big ground triangles warp; the point is to learn whether the real PSP's GE
+   drops the 3D batches (black stage on the PSP-3000, fine in PPSSPP) */
+static void nat_draw_2d(GeV3 *v, uint32_t n)
+{
+    const ScePspFMatrix4 *m = &nat_proj;
+    float tw = nat_tex ? (float)nat_tex->w : 1.0f, th = nat_tex ? (float)nat_tex->h : 1.0f;
+    GeV *o = ge_getmem(n * sizeof(GeV));
+    for (uint32_t i = 0; i < n; i++) {
+        const GeV3 *a = &v[i];
+        float cx = a->x * m->x.x + a->y * m->y.x + a->z * m->z.x + m->w.x;
+        float cy = a->x * m->x.y + a->y * m->y.y + a->z * m->z.y + m->w.y;
+        float cz = a->x * m->x.z + a->y * m->y.z + a->z * m->z.z + m->w.z;
+        float cw = a->x * m->x.w + a->y * m->y.w + a->z * m->z.w + m->w.w;
+        float iw = cw > 1e-6f ? 1.0f / cw : 1e6f;
+        float z = 32767.5f + 32767.5f * cz * iw;
+        o[i].u = a->u * tw; o[i].v = a->v * th; o[i].c = a->c;
+        o[i].x = cx * iw; o[i].y = cy * iw; o[i].z = z < 0.0f ? 0.0f : z > 65535.0f ? 65535.0f : z;
+    }
+    sceGuDrawArray(GU_TRIANGLES, GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_32BITF | GU_TRANSFORM_2D, (int)n, NULL, o);
+}
 static void nat_draw3(int prim, GeV3 *v, uint32_t n)
 {
-    static int on = -1;
+    static int on = -1, d2 = -1;
     if (on < 0) on = ge_opt("gs_clip", 1);
+    if (d2 < 0) d2 = ge_opt("gs_3d2d", 0);
+    if (d2) {                                         /* every triangle through the CPU clipper, then 2D */
+        nat_cn = 0;
+        for (uint32_t i = 2; i < n; i++) {
+            if (prim == 3 && i % 3 != 2) continue;
+            const GeV3 *a = prim == 5 ? &v[0] : &v[i - 2], *b = &v[i - 1], *c = &v[i];
+            if (prim == 4 && (i & 1)) { const GeV3 *t = a; a = b; b = t; }
+            nat_tri_clip(a, b, c);
+        }
+        if (nat_cn) nat_draw_2d(nat_cv, nat_cn);
+        return;
+    }
     int bad = 0;
     if (on && prim >= 3 && prim <= 5)
         for (uint32_t i = 0; i < n && !bad; i++) bad = nat_out(&v[i]) & 63;
@@ -206,6 +241,7 @@ static int nat_begin(uint32_t sqa, const GeTex **t)
     ge_hint_lo = 0;                                   /* 3D: every row of the texture (no hint from a 2D primitive) */
     ge_hint_hi = 0x7FFFFFFF;
     if (ge_setup(p, ctx, t, 100) < 0) return -1;      /* (the key's primitive kind 100 keeps 2D and 3D states apart) */
+    nat_tex = *t;
     uint64_t xyo = reg[0x18 + ctx];
     float ofx = (float)(xyo & 0xFFFF) / 16.0f, ofy = (float)((xyo >> 32) & 0xFFFF) / 16.0f;
     float zs = 1.0f / (float)(1u << ge_zshift(ctx));
