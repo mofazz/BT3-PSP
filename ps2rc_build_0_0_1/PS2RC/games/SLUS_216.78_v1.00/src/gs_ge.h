@@ -36,6 +36,7 @@
 #define GE_LIST_BYTES (320u << 10)                 /* battle: ~1900 3D batches a frame */
 static uint32_t ge_arena_bytes = 640u << 10;
 /* a block of the kernel's user partition (the C heap has no room for it), 64-byte aligned; NULL = none */
+static int ge_opt(const char *k, int def);
 void *ge_kalloc(const char *name, uint32_t bytes)
 {
     SceUID id = sceKernelAllocPartitionMemory(2, name, PSP_SMEM_Low, bytes + 64, NULL);
@@ -102,7 +103,8 @@ static int ge_init(void)
     sceGuOffset(2048, 2048);
     sceGuViewport(2048, 2048, 2, -2);
     sceGuDepthRange(0, 65535);
-    sceGuEnable(GU_CLIP_PLANES);
+    if (ge_opt("gs_geclip", 1)) sceGuEnable(GU_CLIP_PLANES);   /* gs_geclip=0 (experiment, 0.0.7): GE clipping off */
+    else sceGuDisable(GU_CLIP_PLANES);
     {
         ScePspFMatrix4 id;
         memset(&id, 0, sizeof id);

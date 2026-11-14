@@ -70,7 +70,8 @@ static uint32_t nat_col(float r, float g, float b, float a)   /* VU colour float
 /* the GE state for the current PRIM / context, then the projection C x S (S = 4 columns at VU qa); returns the
    primitive type, -1 = not drawn */
 static const GeTex *nat_tex;                          /* the open batch's texture (gs_3d2d) */
-static ScePspFMatrix4 nat_proj;                       /* the projection of the open batch (CPU clipping) */
+static ScePspFMatrix4 nat_proj;
+static ScePspFMatrix4 nat_bm[2];                    /* the two bone matrices of the open batch */                       /* the projection of the open batch (CPU clipping) */
 
 /* the GE drops a whole triangle when a vertex lands outside its 4096-pixel guard band (the stage's ground near the
    camera: a black wedge). Such triangles are cut in four, again and again (object-space midpoints: the texture
@@ -139,14 +140,30 @@ static float nat_plane(int k, const GeV3 *a)
         float cx = a->x * m->x.x + a->y * m->y.x + a->z * m->z.x + m->w.x;
         return k == 1 ? cx + 1500.0f * cw : (480.0f + 1500.0f) * cw - cx;
     }
-    float cy = a->x * m->x.y + a->y * m->y.y + a->z * m->z.y + m->w.y;
-    return k == 3 ? cy + 1500.0f * cw : (272.0f + 1500.0f) * cw - cy;
+    if (k <= 4) {
+        float cy = a->x * m->x.y + a->y * m->y.y + a->z * m->z.y + m->w.y;
+        return k == 3 ? cy + 1500.0f * cw : (272.0f + 1500.0f) * cw - cy;
+    }
+    float cz = a->x * m->x.z + a->y * m->y.z + a->z * m->z.z + m->w.z;
+    return k == 5 ? cz + cw : cw - cz;                    /* GS depth 0 .. 65535 (after the Z shift) */
+}
+/* ps2rc.cfg gs_zclip=1 (experiment, 0.0.7): triangles are also clipped to the depth range, so no vertex the GE gets
+   lies outside z 0..65535 - the real GE may drop such primitives where PPSSPP clamps them */
+static int nat_zclip = -1;
+static int nat_zout(const GeV3 *a)
+{
+    const ScePspFMatrix4 *m = &nat_proj;
+    float cz = a->x * m->x.z + a->y * m->y.z + a->z * m->z.z + m->w.z;
+    float cw = a->x * m->x.w + a->y * m->y.w + a->z * m->z.w + m->w.w;
+    return cz < -cw || cz > cw;
 }
 static void nat_tri_clip(const GeV3 *a, const GeV3 *b, const GeV3 *c)
 {
     int oa = nat_out(a), ob = nat_out(b), oc = nat_out(c);
     if ((oa & ob & oc) & (64 | 128 | 256 | 512)) return;     /* wholly off one side of the screen */
-    if (!((oa | ob | oc) & (63 | 16))) {                      /* inside the band and in front: as it is */
+    if (nat_zclip < 0) nat_zclip = ge_opt("gs_zclip", 0);
+    int zo = nat_zclip ? (nat_zout(a) | nat_zout(b) | nat_zout(c)) : 0;
+    if (!((oa | ob | oc) & (63 | 16)) && !zo) {               /* inside the band and in front: as it is */
         if (nat_cn + 3 > NAT_CLIP_MAX) return;
         nat_cv[nat_cn++] = *a; nat_cv[nat_cn++] = *b; nat_cv[nat_cn++] = *c;
         return;
@@ -154,7 +171,7 @@ static void nat_tri_clip(const GeV3 *a, const GeV3 *b, const GeV3 *c)
     GeV3 pa[9], pb[9], *in = pa, *out = pb;
     int n = 3;
     pa[0] = *a; pa[1] = *b; pa[2] = *c;
-    for (int k = 0; k < 5 && n >= 3; k++) {
+    for (int k = 0; k < (nat_zclip ? 7 : 5) && n >= 3; k++) {
         float d[9];
         int m = 0, all_in = 1;
         for (int i = 0; i < n; i++) { d[i] = nat_plane(k, &in[i]); if (d[i] < 0.0f) all_in = 0; }
@@ -179,8 +196,50 @@ static void nat_tri_clip(const GeV3 *a, const GeV3 *b, const GeV3 *c)
    (GU_TRANSFORM_2D: no GE transform, no GE clipping - the path the 2D sky and HUD already take). Textures are affine
    there (no perspective correction), so big ground triangles warp; the point is to learn whether the real PSP's GE
    drops the 3D batches (black stage on the PSP-3000, fine in PPSSPP) */
+/* screen position of an object-space vertex (gs_3d2d) */
+static void nat_scr(const GeV3 *a, float *x, float *y)
+{
+    const ScePspFMatrix4 *m = &nat_proj;
+    float cx = a->x * m->x.x + a->y * m->y.x + a->z * m->z.x + m->w.x;
+    float cy = a->x * m->x.y + a->y * m->y.y + a->z * m->z.y + m->w.y;
+    float cw = a->x * m->x.w + a->y * m->y.w + a->z * m->z.w + m->w.w;
+    float iw = cw > 1e-6f ? 1.0f / cw : 1e6f;
+    *x = cx * iw; *y = cy * iw;
+}
+/* through mode has no perspective correction: a triangle bigger than ~40 pixels on screen is cut in four (object-space
+   midpoints), up to 3 times, so the texture bends less on the ground near the camera */
+static GeV3 nat_sub[NAT_CLIP_MAX];
+static uint32_t nat_subn;
+static void nat_split2d(const GeV3 *a, const GeV3 *b, const GeV3 *c, int depth)
+{
+    if (depth < 3) {
+        float ax, ay, bx, by, cx, cy;
+        nat_scr(a, &ax, &ay); nat_scr(b, &bx, &by); nat_scr(c, &cx, &cy);
+        float e = fabsf(ax - bx) + fabsf(ay - by), f = fabsf(bx - cx) + fabsf(by - cy), g = fabsf(cx - ax) + fabsf(cy - ay);
+        float big = e > f ? (e > g ? e : g) : (f > g ? f : g);
+        if (big > 48.0f && nat_subn + 12 <= NAT_CLIP_MAX) {
+            GeV3 ab = nat_mid(a, b), bc = nat_mid(b, c), ca = nat_mid(c, a);
+            nat_split2d(a, &ab, &ca, depth + 1);
+            nat_split2d(&ab, b, &bc, depth + 1);
+            nat_split2d(&ca, &bc, c, depth + 1);
+            nat_split2d(&ab, &bc, &ca, depth + 1);
+            return;
+        }
+    }
+    if (nat_subn + 3 > NAT_CLIP_MAX) return;
+    nat_sub[nat_subn++] = *a; nat_sub[nat_subn++] = *b; nat_sub[nat_subn++] = *c;
+}
 static void nat_draw_2d(GeV3 *v, uint32_t n)
 {
+    static int sub = -1;
+    if (sub < 0) sub = ge_opt("gs_3d2d_split", 1);
+    if (sub) {
+        nat_subn = 0;
+        for (uint32_t i = 0; i + 2 < n; i += 3) nat_split2d(&v[i], &v[i + 1], &v[i + 2], 0);
+        v = nat_sub;
+        n = nat_subn;
+        if (!n) return;
+    }
     const ScePspFMatrix4 *m = &nat_proj;
     float tw = nat_tex ? (float)nat_tex->w : 1.0f, th = nat_tex ? (float)nat_tex->h : 1.0f;
     GeV *o = ge_getmem(n * sizeof(GeV));
@@ -215,7 +274,7 @@ static void nat_draw3(int prim, GeV3 *v, uint32_t n)
     }
     int bad = 0;
     if (on && prim >= 3 && prim <= 5)
-        for (uint32_t i = 0; i < n && !bad; i++) bad = nat_out(&v[i]) & 63;
+        for (uint32_t i = 0; i < n && !bad; i++) bad = (nat_out(&v[i]) & 63) | (nat_zclip > 0 && nat_zout(&v[i]));
     if (!bad) {
         sceGuDrawArray(prim, GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_32BITF | GU_TRANSFORM_3D, (int)n, NULL, v);
         return;
@@ -233,6 +292,29 @@ static void nat_draw3(int prim, GeV3 *v, uint32_t n)
                    NULL, o);
 }
 
+/* a weighted (2-bone) batch: drawn by the GE's skinning, or with gs_3d2d=1 blended on the CPU and sent through the
+   2D path (the real PSP-3000 GE drops these 3D batches; PPSSPP draws them) */
+static void nat_draw3(int prim, GeV3 *v, uint32_t n);
+static void nat_draw_w(int prim, GeVW *v, uint32_t n)
+{
+    static int d2 = -1;
+    if (d2 < 0) d2 = ge_opt("gs_3d2d", 0);
+    if (!d2) {
+        nat_draw_w(prim, v, n);
+        return;
+    }
+    GeV3 t[80];
+    if (n > 80) n = 80;
+    const ScePspFMatrix4 *A = &nat_bm[0], *B = &nat_bm[1];
+    for (uint32_t i = 0; i < n; i++) {
+        float x = v[i].x, y = v[i].y, z = v[i].z, w0 = v[i].w0, w1 = v[i].w1;
+        t[i].x = w0 * (x * A->x.x + y * A->y.x + z * A->z.x + A->w.x) + w1 * (x * B->x.x + y * B->y.x + z * B->z.x + B->w.x);
+        t[i].y = w0 * (x * A->x.y + y * A->y.y + z * A->z.y + A->w.y) + w1 * (x * B->x.y + y * B->y.y + z * B->z.y + B->w.y);
+        t[i].z = w0 * (x * A->x.z + y * A->y.z + z * A->z.z + A->w.z) + w1 * (x * B->x.z + y * B->y.z + z * B->z.z + B->w.z);
+        t[i].u = v[i].u; t[i].v = v[i].v; t[i].c = v[i].c;
+    }
+    nat_draw3(prim, t, n);
+}
 static int nat_begin(uint32_t sqa, const GeTex **t)
 {
     uint64_t p = (reg[0x1A] & 1) ? PRIM : reg[0x1B];
@@ -297,6 +379,7 @@ static void nat_bone(int idx, uint32_t qa, uint32_t ofs)
     m.w.y = c3[1] - (c0[1] * o[0] + c1[1] * o[1] + c2[1] * o[2]);
     m.w.z = c3[2] - (c0[2] * o[0] + c1[2] * o[1] + c2[2] * o[2]);
     m.w.w = 1;
+    nat_bm[idx & 1] = m;                              /* (gs_3d2d: CPU skinning) */
     static ScePspFMatrix4 last[2];                    /* unchanged bones are not sent again */
     if (memcmp(&m, &last[idx & 1], sizeof m)) { sceGuBoneMatrix((unsigned)idx, &m); last[idx & 1] = m; }
 }
@@ -358,8 +441,7 @@ static void nat_prog0_batch(uint32_t top)
             v[i].y = pos[1];
             v[i].z = pos[2];
         }
-        sceGuDrawArray(prim, GU_WEIGHTS(2) | GU_WEIGHT_32BITF | GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_32BITF
-                       | GU_TRANSFORM_3D, (int)n, NULL, v);
+        nat_draw_w(prim, v, n);
         ge_dirty = 1;
         ge_st_nat_verts += n;
     }
@@ -394,8 +476,7 @@ static void nat_prog2_batch(uint32_t top)
         v[i].y = pos[1];
         v[i].z = pos[2];
     }
-    sceGuDrawArray(prim, GU_WEIGHTS(2) | GU_WEIGHT_32BITF | GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_32BITF
-                   | GU_TRANSFORM_3D, (int)n, NULL, v);
+    nat_draw_w(prim, v, n);
     ge_dirty = 1;
     ge_st_nat_batches++;
     ge_st_nat_verts += n;
@@ -437,8 +518,7 @@ static void nat_prog1_batch(uint32_t top)
             v[i].y = pos[1];
             v[i].z = pos[2];
         }
-        sceGuDrawArray(prim, GU_WEIGHTS(2) | GU_WEIGHT_32BITF | GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_32BITF
-                       | GU_TRANSFORM_3D, (int)n0, NULL, v);
+        nat_draw_w(prim, v, n0);
         ge_dirty = 1;
         ge_st_nat_verts += n0;
     }
