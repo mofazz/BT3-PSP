@@ -8,6 +8,43 @@ Kit para construir la versión de PSP de *Dragon Ball Z: Budokai Tenkaichi 3* (N
 1.00) a partir de **tu propia ISO** del juego. El kit no contiene datos del juego: la ISO se lee en tu PC y todo lo
 que se deriva de ella (código traducido, EBOOT, archivos del disco) se genera en tu máquina.
 
+## Build 0.0.2 (English)
+
+Changes made for speed and for the real PSP-3000. None of them has been compiled for the PSP or run yet: there was no
+PSP toolchain where they were written. The default build's translation and prepare step were run on a PC with the
+new hooks and passed.
+
+| Change | Files | Why |
+|---|---|---|
+| memcmp, strcmp, strlen, strcpy, memmove, sqrtf, sinf, cosf, atanf, acosf, asinf and atan2f run as native C | `src/libc_hle.c`, `hooks.def` | In the PPSSPP logs, memcmp was 80–99 % of the game's loop iterations in menus and battle, with strcmp next. `ps2rc.cfg libc_hle=0` turns this off. |
+| Smaller fixed memory window (28 MB) that grows to 32 MB when there is room | `pack.toml` (`ram_end_psp`, `[stage.cfg] heap_extra_kb=-1`, `mem_reserve_kb=3072`) | The old window needed 33.9 MB at start. PPSSPP reports about 5 MB more free memory than a real PSP has, so the real PSP-3000 probably did not have enough. 3 MB stay free for the GE list and the texture cache. |
+| `log_sync=2` | `pack.toml [stage.cfg]` | With `log_sync=1`, the game thread opens, appends to and closes `session.log` for every line, which costs up to 100 ms per frame on a memory stick. Now the watchdog thread writes the log every 500 ms. |
+| The "native VU1" log line is written every 100,000 batches (was every 5,000) | `src/gs_ge_vu1.h` | Less log traffic in battle. |
+| `--fast` build option | `build_psp.sh`, `build_psp.bat`, `fast.toml`, `textpatch_fast.tsv` | This builds with ABI-mode translation (`v5s3`) instead of `v0`, which keeps every guest register in memory after every instruction. The PS2RC reference port uses an ABI mode. On a PC, the translation (9,535 functions, 0 stubbed) and the prepare step both ran, and every generated unit passed a syntax check. It has not been compiled for the PSP or run. |
+
+### Rebuilding
+
+The hook list changed, so the old `work` folder cannot be reused. Add `--restart`, or delete `work`:
+
+```
+build_psp.bat "C:\path\BT3.iso" "C:\out\normal" --restart
+build_psp.bat "C:\path\BT3.iso" "C:\out\fast" --fast --restart
+```
+
+The `--fast` build shows as "BT3 PSP fast" in the XMB. Copy each output folder to `PSP/GAME/` under a different
+folder name to compare them.
+
+### What to send back
+
+1. From the **real PSP**: `session.log`, right after a start that fails. The next start renames it to
+   `session_prev.log`. Its first lines tell whether the problem is memory (`window_alloc`, `Not enough free memory`),
+   the crash handler, or something later.
+2. A profile: add `prof=1` to `ps2rc.cfg`, play one battle for a minute, then send `session.log`. A summary of where
+   the time goes is written every 10 s. On the real PSP only, `prof_hw=1` also reads the CPU's cache-miss counters;
+   never set it in PPSSPP.
+
+Timings from PPSSPP are not meaningful: it does not charge for the GE, and it paces the game loop itself.
+
 ## Contenido
 
 | Ruta | Qué es |

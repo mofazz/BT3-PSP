@@ -24,7 +24,9 @@ code = [0x00100000, 0x002C33C0]            # the translated code [start, end): n
 # ctor_code = [0, 0]                       # static-constructor code outside .text, if any
 data_end = 0x002FF16E                      # end of the program's file data (one PT_LOAD segment from code start)
 bss_end = 0x00334BF8                       # end of BSS (incl. an overlay window)
-ram_end_psp = 0x01FF0000                   # guest RAM present on the PSP (the runtime caps it at 0x1FF0000; the
+ram_end_psp = 0x01C00000                   # guest RAM the PSP must have (28 MB: game heap ~23.6 MB); the window
+                                           # grows to 0x1FF0000 when the memory is there (ps2rc.cfg heap_extra_kb=-1,
+                                           # [stage.cfg] below). Was 0x1FF0000 fixed: 33.9 MB needed at start (the
                                            # game heap is capped to fit below it: textpatch.tsv)
 
 [overlays]                                 # two code images made from the player's disc by convert/*.py:
@@ -99,8 +101,7 @@ files = []                                 # ... plus these disc files (paths in
 # replace = [{ file = "SETTINGS.INI", find = "heap 30000", with = "heap 20000" }]   # same-size text replacements
 # movies = ["MOVIES/INTRO.PSS"]            # movies the converter converts (ps2rc/movies)
 
-# [stage.cfg]                              # run options written into [runtime] cfg (then --cfg key=value)
-# max_seconds = "36000"
+# [stage.cfg]: at the end of this file
 
 [convert]                                  # the trap set, made from the disc before the translation
 analysis = [["{pack}/convert/trapset.py", "--out", "{work}/trapset.txt"]]
@@ -143,3 +144,10 @@ extras = []
 [stage.cfg]                                # run options the staged PSP folder gets (ps2rc.cfg)
 mem_volatile = "1"                         # the 4 MB GS memory goes to the volatile partition (gs_soft.c)
 screen = "0"                               # no log text on screen: the GE presents from the console's VRAM
+heap_extra_kb = "-1"                       # guest RAM above ram_end_psp as far as the PSP's free memory allows
+mem_reserve_kb = "3072"                    # ...keeping 3 MB free after it: GE list 320 KB + texture arena 1 MB +
+                                           # VIF buffer + the settings menu's 320 KB pool + margin (heap_extra_kb
+                                           # alone keeps 512 KB: the GE would fall back to the software GS)
+log_sync = "2"                             # session.log buffered, written by the watchdog thread every 500 ms: the
+                                           # game thread never waits for the memory stick (log_sync=1 = every line
+                                           # opened / appended / closed by the game thread: up to 100 ms a frame)

@@ -422,7 +422,7 @@ static int ge_vu1_native(int cont, uint32_t pair, uint32_t top)
         int bit = nat_prog == 1 ? 1 : nat_prog == 11 ? 2 : nat_prog == 2 ? 4 : 8;
         if (skip & bit) { if (nat_prog == 4) nat_batches++; return 1; }
     }
-    if (ge_st_nat_batches % 5000 == 1)
+    if (ge_st_nat_batches % 100000 == 1)
         LOG("gs_ge: native VU1: %llu batches, %llu vertices (program %d now)\n", (unsigned long long)ge_st_nat_batches,
             (unsigned long long)ge_st_nat_verts, nat_prog == 1 ? 0 : nat_prog);
     if (nat_prog == 4) {

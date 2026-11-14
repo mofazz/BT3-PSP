@@ -1,0 +1,3 @@
+# textpatch_fast.tsv - the same Heap_Create patch as textpatch.tsv for the ABI-mode translation (build_psp --fast):
+# there the register is the C local r16 (an int32_t in v5s3), not c->r[16]
+fn_00254f80	r16 = (int32_t)((((uint64_t)(int64_t)r16) | 0xb000ull));	r16 = (int32_t)((((uint64_t)(int64_t)r16) | 0xb000ull)); { extern uint32_t bt3_heap_top(uint32_t); r16 = (int32_t)bt3_heap_top((uint32_t)r16); }

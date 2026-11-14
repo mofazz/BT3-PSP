@@ -1,0 +1,11 @@
+# fast.toml - the faster translation (build_psp --fast copies this file to pack.private.toml for one build).
+# v0 (pack.toml) keeps every guest register in the context after every instruction: exact, and the slowest form.
+# ABI mode keeps registers in C locals and writes back only what the calling convention makes visible at calls.
+# v5s3 = ABI mode without "maskbase" (the lever that needs a host check run for out-of-window accesses).
+# Checked on a PC: the translation (8780 + 755 functions, 0 stubbed) and the prepare step (text patch applied).
+# Not yet compiled for the PSP or run: if the build or the game breaks, build without --fast and report it.
+[translate]
+variant = "v5s3"
+
+[build]
+textpatch = "textpatch_fast.tsv"           # Heap_Create's patch in the ABI form (r16 is a C local)

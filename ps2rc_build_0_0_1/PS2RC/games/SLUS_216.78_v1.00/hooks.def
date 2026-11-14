@@ -119,3 +119,20 @@ HOOK(00297c58, sceMpegGetPicture)
 
 /* test shortcut into the demo battle (src/demo_direct.c; ps2rc.cfg demo_direct=1 / BT3_DEMO_DIRECT=1) */
 HOOK_OV(2, 00336a90, Progress_Main)
+
+/* ---- newlib leaf functions run natively (src/libc_hle.c; ps2rc.cfg libc_hle=0 = translated originals).
+   memcmp was 80-99 % of the game thread's loop iterations in the session logs (menus and battle), strcmp next.
+   Addresses: Tenkaichi3Decomp config/symbols/lib.txt, checked against SLUS_216.78 (each one starts after a jr ra). */
+HOOK(002a9988, memcmp)
+HOOK(002aa3b4, strcmp)
+HOOK(002aa4f8, strcpy)
+HOOK(002aa60c, strlen)
+HOOK(002af204, memmove)
+HOOK(0028f770, sqrtf)
+HOOK(00291f30, __ieee754_sqrtf)
+HOOK(0028f598, sinf)
+HOOK(0028f3c0, cosf)
+HOOK(0028f130, atanf)
+HOOK(0028f710, acosf)
+HOOK(0028f728, asinf)
+HOOK(0028f740, atan2f)
