@@ -52,7 +52,9 @@ cfg = "ps2rc.cfg"                          # the PSP run options file next to th
 # cfg_legacy = "old.cfg"                  # an older name of it: read only when cfg is not there (folders made by
                                            # an earlier version); a converter update moves its values into cfg
 psp_module = "PS2RC"                       # the PSP module name
-# zones = [["name", "zone.name", 0, 1]]    # extra profiler zones of the pack's modules (id, display name, flags, rate)
+zones = [["gs_nat", "gs.native", 0, 1], ["gs_vu1i", "gs.vu1interp", 0, 1], ["gs_unpack", "gs.unpack", 0, 1]]
+                                           # profiler zones inside hle.dma (prof=1): the native VU1 programs (CPU
+                                           # side + GE list), the VU1 interpreter, VIF unpacks (src/gs_soft.c)
 # boot_arg0 = 'cdrom0:\SLUS_000.00;1'      # argv[0] the kernel passes to main (default from boot_elf)
 
 # [symbols]                                # guest data addresses the core touches (named, see hle/core/hle_sce.c)

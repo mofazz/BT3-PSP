@@ -1,0 +1,222 @@
+{
+ "counts": {
+  "functions": 9535,
+  "exact_functions": 26,
+  "per_reason": {
+   "4-ra-data": 13,
+   "2-callee-saved": 4,
+   "3-fragment": 4,
+   "1-input": 9,
+   "4-kernel": 5,
+   "4-stack": 3,
+   "4-ra-return": 2
+  }
+ },
+ "functions": {
+  "bt3_kpatch.mwo3:80076680": {
+   "reasons": [
+    "4-kernel",
+    "4-ra-data"
+   ],
+   "insns": 15
+  },
+  "bt3_kpatch.mwo3:800766c0": {
+   "reasons": [
+    "4-ra-return",
+    "4-stack"
+   ],
+   "insns": 10
+  },
+  "dbzp.mwo3:00375570": {
+   "reasons": [
+    "2-callee-saved",
+    "4-stack"
+   ],
+   "insns": 110
+  },
+  "dbzp.mwo3:00375718": {
+   "reasons": [
+    "1-input",
+    "2-callee-saved",
+    "4-ra-return",
+    "4-stack"
+   ],
+   "insns": 236
+  },
+  "main:0010012c": {
+   "reasons": [
+    "1-input",
+    "3-fragment"
+   ],
+   "insns": 71
+  },
+  "main:00100158": {
+   "reasons": [
+    "1-input",
+    "3-fragment"
+   ],
+   "insns": 60
+  },
+  "main:00100178": {
+   "reasons": [
+    "1-input",
+    "3-fragment"
+   ],
+   "insns": 52
+  },
+  "main:00120018": {
+   "reasons": [
+    "3-fragment"
+   ],
+   "insns": 28
+  },
+  "main:00120308": {
+   "reasons": [
+    "4-ra-data"
+   ],
+   "insns": 35
+  },
+  "main:00120398": {
+   "reasons": [
+    "4-ra-data"
+   ],
+   "insns": 35
+  },
+  "main:00120428": {
+   "reasons": [
+    "4-ra-data"
+   ],
+   "insns": 35
+  },
+  "main:00120db0": {
+   "reasons": [
+    "4-ra-data"
+   ],
+   "insns": 27
+  },
+  "main:00120e20": {
+   "reasons": [
+    "4-ra-data"
+   ],
+   "insns": 27
+  },
+  "main:00120e90": {
+   "reasons": [
+    "4-ra-data"
+   ],
+   "insns": 27
+  },
+  "main:00240c68": {
+   "reasons": [
+    "4-ra-data"
+   ],
+   "insns": 27
+  },
+  "main:00240cd8": {
+   "reasons": [
+    "4-ra-data"
+   ],
+   "insns": 27
+  },
+  "main:00240d48": {
+   "reasons": [
+    "4-ra-data"
+   ],
+   "insns": 27
+  },
+  "main:002967c0": {
+   "reasons": [
+    "2-callee-saved"
+   ],
+   "insns": 226
+  },
+  "main:002baa58": {
+   "reasons": [
+    "4-kernel",
+    "4-ra-data"
+   ],
+   "insns": 26
+  },
+  "main:002bb098": {
+   "reasons": [
+    "2-callee-saved"
+   ],
+   "insns": 169
+  },
+  "main:002bcb80": {
+   "reasons": [
+    "1-input",
+    "4-kernel",
+    "4-ra-data"
+   ],
+   "insns": 64
+  },
+  "main:002bcc80": {
+   "reasons": [
+    "4-kernel"
+   ],
+   "insns": 77
+  },
+  "main:002bcdc0": {
+   "reasons": [
+    "1-input",
+    "4-kernel",
+    "4-ra-data"
+   ],
+   "insns": 63
+  },
+  "main:002c10a0": {
+   "reasons": [
+    "1-input"
+   ],
+   "insns": 12
+  },
+  "main:002c1e18": {
+   "reasons": [
+    "1-input"
+   ],
+   "insns": 12
+  },
+  "main:002c2c30": {
+   "reasons": [
+    "1-input"
+   ],
+   "insns": 12
+  }
+ },
+ "exact_starts": {
+  "main": [
+   "0010012c",
+   "00100158",
+   "00100178",
+   "00120018",
+   "00120308",
+   "00120398",
+   "00120428",
+   "00120db0",
+   "00120e20",
+   "00120e90",
+   "00240c68",
+   "00240cd8",
+   "00240d48",
+   "00254f80",
+   "002967c0",
+   "002baa58",
+   "002bb098",
+   "002bcb80",
+   "002bcc80",
+   "002bcdc0",
+   "002c10a0",
+   "002c1e18",
+   "002c2c30"
+  ],
+  "bt3_kpatch.mwo3": [
+   "80076680",
+   "800766c0"
+  ],
+  "dbzp.mwo3": [
+   "00375570",
+   "00375718"
+  ]
+ }
+}

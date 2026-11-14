@@ -6,6 +6,10 @@
 # Not yet compiled for the PSP or run: if the build or the game breaks, build without --fast and report it.
 [translate]
 variant = "v5s3"
+exempt = true                              # the functions that break the calling convention stay exact:
+non_abi = "lists/non_abi.json"             # convert/non_abi.py (26: the matrix rotations Mtx_/Vu0Cur_/StgVu_Rotate*
+                                           # use their return address as data - the wild battle camera of 0.0.2 -,
+                                           # Vu0_SinCos, crt0, kernel / save code; + Heap_Create for its text patch)
 
 [build]
 textpatch = "textpatch_fast.tsv"           # Heap_Create's patch in the ABI form (r16 is a C local)

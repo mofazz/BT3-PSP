@@ -36,6 +36,7 @@
 #include <pspdisplay.h>
 #include <pspge.h>
 #include "hle_cfg.h"
+#include "hle_prof.h"                         /* 0.0.5: PZ_SCOPE zones gs.native / gs.vu1interp / gs.unpack */
 #define HLE_IS_PSP 1
 #else
 #define HLE_IS_PSP 0
@@ -1075,7 +1076,10 @@ static void vu_start(int cont, uint32_t pair)
     if (!cont) vu_need_mscal = 0;
     else if (vu_need_mscal) return;                 /* after a fast-forward: no program state until an MSCAL */
 #ifdef HLE_PSP
-    if (GE_ACTIVE && ge_vu1_native(cont, pair, top)) return;   /* programs 0 / 4 drawn by the GE (gs_ge_vu1.h) */
+    {
+        PZ_SCOPE(gs_nat);
+        if (GE_ACTIVE && ge_vu1_native(cont, pair, top)) return;   /* programs 0 / 4 drawn by the GE (gs_ge_vu1.h) */
+    }
 #endif
     static int vu_all = -1;                     /* BT3_VU1_ALL=1: run VU1 every frame (its output only rasterised when drawn) */
     if (vu_all < 0) { const char *e = getenv("BT3_VU1_ALL"); vu_all = e && atoi(e); }
@@ -1084,8 +1088,13 @@ static void vu_start(int cont, uint32_t pair)
     SceUInt32 t0 = sceKernelGetSystemTimeLow();
     uint64_t pr0 = vu1_stat_pairs;
 #endif
-    if (cont) vu1_mscnt(top, vif_itops);
-    else vu1_mscal(pair, top, vif_itops);
+    {
+#ifdef HLE_PSP
+        PZ_SCOPE(gs_vu1i);
+#endif
+        if (cont) vu1_mscnt(top, vif_itops);
+        else vu1_mscal(pair, top, vif_itops);
+    }
 #ifdef HLE_PSP
     vu_interp_us += sceKernelGetSystemTimeLow() - t0;
     vu_interp_runs++;
@@ -1109,6 +1118,9 @@ static uint32_t sext(uint32_t v, unsigned bits, int usn)
 /* UNPACK: writes num vectors to VU1 memory; returns the data words it consumed */
 static uint32_t vif_unpack(uint32_t cmd, uint32_t num, uint32_t imm, const uint32_t *w, uint32_t avail)
 {
+#ifdef HLE_PSP
+    PZ_SCOPE(gs_unpack);
+#endif
     uint32_t vn = (cmd >> 2) & 3, vl = cmd & 3, msk = (cmd >> 4) & 1;
     uint32_t addr = imm & 0x3FF, usn = (imm >> 14) & 1;
     if (imm & 0x8000) addr += vif_tops;

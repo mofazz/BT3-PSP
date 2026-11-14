@@ -125,38 +125,52 @@ static GeV3 nat_mid(const GeV3 *a, const GeV3 *b)
     r.c = c;
     return r;
 }
-static void nat_tri(const GeV3 *a, const GeV3 *b, const GeV3 *c, int depth);
-/* near clipping (w >= NAT_WMIN) in object space, then the pieces */
+/* exact clipping (0.0.2): the triangle is clipped in object space (clip coordinates are linear there, and so are the
+   texture coordinates and colours) against the near plane w >= NAT_WMIN and the four sides of the GE's guard band,
+   then drawn as a fan. The old way cut a triangle in four up to 3 times and dropped the pieces still outside the
+   band: the black wedge of missing ground near the camera. Fewer vertices too (at most 8 per triangle, not 64 x 3). */
+static float nat_plane(int k, const GeV3 *a)
+{
+    const ScePspFMatrix4 *m = &nat_proj;
+    float cw = a->x * m->x.w + a->y * m->y.w + a->z * m->z.w + m->w.w;
+    if (k == 0) return cw - NAT_WMIN;
+    if (k <= 2) {
+        float cx = a->x * m->x.x + a->y * m->y.x + a->z * m->z.x + m->w.x;
+        return k == 1 ? cx + 1500.0f * cw : (480.0f + 1500.0f) * cw - cx;
+    }
+    float cy = a->x * m->x.y + a->y * m->y.y + a->z * m->z.y + m->w.y;
+    return k == 3 ? cy + 1500.0f * cw : (272.0f + 1500.0f) * cw - cy;
+}
 static void nat_tri_clip(const GeV3 *a, const GeV3 *b, const GeV3 *c)
 {
-    const GeV3 *in[3] = {a, b, c};
-    float w[3] = {nat_wof(a), nat_wof(b), nat_wof(c)};
-    if (w[0] >= NAT_WMIN && w[1] >= NAT_WMIN && w[2] >= NAT_WMIN) { nat_tri(a, b, c, 0); return; }
-    GeV3 poly[4];
-    int np = 0;
-    for (int i = 0; i < 3; i++) {
-        int j = (i + 1) % 3;
-        int ii = w[i] >= NAT_WMIN, ij = w[j] >= NAT_WMIN;
-        if (ii) poly[np++] = *in[i];
-        if (ii != ij) poly[np++] = nat_lerp(in[i], in[j], (NAT_WMIN - w[i]) / (w[j] - w[i]));
-    }
-    for (int k = 2; k < np; k++) nat_tri(&poly[0], &poly[k - 1], &poly[k], 0);
-}
-static void nat_tri(const GeV3 *a, const GeV3 *b, const GeV3 *c, int depth)
-{
     int oa = nat_out(a), ob = nat_out(b), oc = nat_out(c);
-    if (oa & ob & oc & (64 | 128 | 256 | 512)) return;       /* wholly off one side of the screen */
-    if (!((oa | ob | oc) & 63) || depth >= 3) {
-        if ((oa | ob | oc) & 63) return;                     /* still outside the band: the GE would drop it */
+    if ((oa & ob & oc) & (64 | 128 | 256 | 512)) return;     /* wholly off one side of the screen */
+    if (!((oa | ob | oc) & (63 | 16))) {                      /* inside the band and in front: as it is */
         if (nat_cn + 3 > NAT_CLIP_MAX) return;
         nat_cv[nat_cn++] = *a; nat_cv[nat_cn++] = *b; nat_cv[nat_cn++] = *c;
         return;
     }
-    GeV3 ab = nat_mid(a, b), bc = nat_mid(b, c), ca = nat_mid(c, a);
-    nat_tri(a, &ab, &ca, depth + 1);
-    nat_tri(&ab, b, &bc, depth + 1);
-    nat_tri(&ca, &bc, c, depth + 1);
-    nat_tri(&ab, &bc, &ca, depth + 1);
+    GeV3 pa[9], pb[9], *in = pa, *out = pb;
+    int n = 3;
+    pa[0] = *a; pa[1] = *b; pa[2] = *c;
+    for (int k = 0; k < 5 && n >= 3; k++) {
+        float d[9];
+        int m = 0, all_in = 1;
+        for (int i = 0; i < n; i++) { d[i] = nat_plane(k, &in[i]); if (d[i] < 0.0f) all_in = 0; }
+        if (all_in) continue;
+        for (int i = 0; i < n; i++) {
+            int j = i + 1 == n ? 0 : i + 1;
+            int ii = d[i] >= 0.0f, ij = d[j] >= 0.0f;
+            if (ii) out[m++] = in[i];
+            if (ii != ij && m < 9) out[m++] = nat_lerp(&in[i], &in[j], d[i] / (d[i] - d[j]));
+        }
+        GeV3 *t = in; in = out; out = t;
+        n = m;
+    }
+    for (int k = 2; k < n; k++) {
+        if (nat_cn + 3 > NAT_CLIP_MAX) return;
+        nat_cv[nat_cn++] = in[0]; nat_cv[nat_cn++] = in[k - 1]; nat_cv[nat_cn++] = in[k];
+    }
 }
 /* draws n vertices of GS primitive prim (3 list, 4 strip, 5 fan) already in list memory v: as they are when every
    vertex is inside the band, else cut as above */

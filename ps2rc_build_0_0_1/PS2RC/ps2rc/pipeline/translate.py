@@ -283,6 +283,15 @@ def _par_team(functions):
     return parallel if n > 1 and len(functions) > 2 * parallel.CHUNK else None
 
 
+# BT3 0.0.4 fix: functions whose argument registers count as all live, whatever their code shows - the exact (non-ABI)
+# functions and the hooked ones. The analysis reads an exact function's code under the ABI (a call kills a0-a3), but
+# such a function may call a non-ABI helper that keeps them (BT3: Mtx_RotateZ calls Vu0_SinCos, then reads a0/a1): its
+# livein came out empty, and an ABI wrapper that forwards its a1 untouched (Mtx_RotateZXY) then had callers that never
+# stored a1 (Vec4_RotateEuler: garbage rotation matrices - the wild battle camera of the --fast build). Kept at ARGS in
+# every round, so the demand reaches the wrappers' callers too.
+FIXED_ARGS = set()
+
+
 def argument_livein(img, functions, rounds=3):
     """ps2rc.analysis.width.argument_livein + rule 1 (a syscall reads every argument register). Jacobi rounds (each
     reads only the previous round's result), so PS2RC_TRANSLATE_JOBS > 1 splits every round over processes with the
@@ -304,6 +313,9 @@ def argument_livein(img, functions, rounds=3):
                 for a, f in fns.items():
                     new[a], nsys = _livein_fn(f, livein)
                     SYSCALL_SEEN["n"] += nsys
+            for a in FIXED_ARGS:
+                if a in new:
+                    new[a] = ARGS
             if new == livein:
                 break
             livein = new
@@ -564,6 +576,11 @@ def translate(p, variant, out, functions=None, use_exempt=False, overlays=False,
         vskip = [ln.split()[0] for ln in open(vfloc_skip, encoding="utf-8") if ln.strip() and not ln.startswith("#")]
         backend_c.VFLOC_SKIP = frozenset(vskip)
     rules = _PspRules(hooked_addresses(p.path("build.hooks"))) if psp_rules and variant != "v0" else None
+    FIXED_ARGS.clear()
+    if rules:
+        FIXED_ARGS.update(rules.hooks)
+    if use_exempt:
+        FIXED_ARGS.update(exempt_sets(p.path("translate.non_abi")).get("main", ()))
     analyse = rules.analyse_program if rules else analyse_program
     disc = p.disc()
     img = load_elf(os.path.join(disc, p.get("id.boot_elf"))).stripped()
