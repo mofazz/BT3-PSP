@@ -1,0 +1,6 @@
+# Heap_Create (0x254F80) mallocs 0x1EFB000 - 0x3BE71C at once (the whole PS2 RAM): the top follows the guest RAM end
+# (bt3_heap_top, src/pack_main.c), so a PSP window below 32 MB still gets a heap
+# BtlLoad_StepInitial (0x127C40): stage buffer 0x6CB800 -> the size of the stage it loads (bt3_stage_buf, src/pack_main.c)
+# (the v5s4y2 translation: registers in locals)
+fn_00254f80	r16 = (int32_t)((((uint64_t)(int64_t)r16) | 0xb000ull));	r16 = (int32_t)((((uint64_t)(int64_t)r16) | 0xb000ull)); { extern uint32_t bt3_heap_top(uint32_t); r16 = (int32_t)bt3_heap_top((uint32_t)r16); }
+fn_00127c40	r2 = (r2 | 0xb800ull);	r2 = (r2 | 0xb800ull); { extern uint32_t bt3_stage_buf(uint32_t); r2 = SX32(bt3_stage_buf((uint32_t)r2)); }

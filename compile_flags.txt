@@ -1,3 +1,0 @@
--Iinclude
--std=gnu89
--Wno-everything

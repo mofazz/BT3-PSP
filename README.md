@@ -1,79 +1,114 @@
 # BT3-PSP
 
-A work-in-progress native PSP port of **Dragon Ball Z: Budokai Tenkaichi 3** (PlayStation 2, USA release,
-SLUS-21678). The game's own decompiled code is compiled for the PSP. It is not an emulator.
+> Based on PS2RC by SandstoneDev  
+> https://github.com/SandstoneDev/PS2RC  
+> Community: https://discord.gg/wV8x46ZTDu
 
-This repository contains **no game data**. The game's files are copied from your own disc of the USA release to
-the memory stick, see [Game files](#game-files).
+Port no oficial para PSP de **Dragon Ball Z: Budokai Tenkaichi 3** (PS2, NTSC-U, **SLUS-216.78**, versión 1.00),
+hecho con el recompilador estático **PS2RC**: el código del juego se traduce de MIPS a C y se compila para la PSP en
+tu propio PC, a partir de **tu propia ISO**. No es un emulador.
 
-This is an unofficial port. It is not affiliated with the projects it is based on (see [Credits](#credits));
-please report problems with the PSP version here, not upstream.
+Este repositorio **no contiene datos del juego**: ni la ISO, ni código traducido, ni texturas, ni mapas. Todo lo que
+sale del disco (traducción, EBOOT, volcados y mapas nativos) se genera en tu máquina y no debe distribuirse.
 
-## Status
+## Estado
 
-The port is in an early stage and is not playable at full speed yet. The target is the PSP-3000 with a custom
-firmware (ARK) and extra memory enabled.
+En desarrollo; no llega aún a velocidad completa. Medido en PPSSPP (sus tiempos no son los de una PSP real; sirven
+para comparar):
 
-- The game's logic runs on the PSP, and the menus are drawn.
-- Two renderers exist: a software one (correct but very slow) and a GPU one through the PSP's GE (`gu.txt`), which
-  draws only the frame's own buffer for now (no glow, blur or shadow buffers).
-- Sound and the opening and ending films are not implemented.
+| | Velocidad del juego |
+|---|---|
+| Batalla con el escenario original del juego | ~0,46x |
+| Batalla con mapa nativo (`map_native=1`) | 0,40x – 0,77x según el escenario |
+| Batalla sin dibujar nada (límite de la lógica del juego) | ~0,75x |
 
-The stages, modes, log files and debugging tools are described in [port/psp/README.md](port/psp/README.md).
+- Menús, demo y batallas funcionan; los luchadores, efectos y HUD se dibujan con la GE de la PSP.
+- **Mapas nativos**: el escenario estático del juego se sustituye por un mapa preparado en el PC (celdas con dos
+  niveles de detalle, cielo de media esfera, edificios lejanos como cajas). El juego deja de hacer su culling y su
+  dibujo de ese escenario; el cielo animado, los objetos animados y los escombros siguen siendo del juego.
+- Sin sonido (el ADX va en silencio) ni vídeos de introducción.
 
-## Building
+## Contenido
 
-The build needs the [PSPDEV](https://pspdev.github.io/) toolchain, Python 3 and libclang. No game files are needed
-to build.
+| Ruta | Qué es |
+|---|---|
+| `PS2RC/` | El recompilador PS2RC (licencia en `PS2RC/LICENSE`) con el paquete del juego `PS2RC/games/SLUS_216.78_v1.00/`: hooks, funciones nativas, el renderizador GS→GE y el mapa nativo (`src/gs_ge_map.h`) |
+| `build_psp.bat` / `build_psp.sh` | Construyen la carpeta de PSP desde la ISO (Windows / WSL-Linux) |
+| `herramientas/mapas/` | Extracción de escenarios y generación de los mapas nativos con LOD |
+| `herramientas/pruebas/` | Medición de velocidad en PPSSPP |
+| `herramientas/config.sh` | Rutas locales que usan las herramientas |
+
+## 1. Construir el juego
+
+Requisitos:
+
+1. **Python 3.10+** en Windows con `pyelftools` y `pillow` (`python -m pip install pyelftools pillow`).
+2. **Toolchain de PSP**: WSL2 (Ubuntu) con [pspdev](https://pspdev.github.io/) en `~/pspdev` (el conversor lo
+   encuentra solo), o una carpeta de toolchain nativa con `--toolchain`.
+3. Tu ISO de SLUS-216.78 v1.00 (el conversor comprueba tamaño y SHA-256 del ejecutable; otras versiones se rechazan).
 
 ```
-pip install libclang
-export PSPDEV=$HOME/pspdev; export PATH=$PATH:$PSPDEV/bin
-python3 port/psp/build.py
+build_psp.bat "C:\ruta\BT3.iso" "C:\salida\PS2RC_BT3"
 ```
 
-This produces `port/build/psp/EBOOT.PBP` and `port/build/psp/ps2rc_exc.prx` (the crash catcher, which goes next to
-the EBOOT). With `PSP_MS_ROOT=/path/to/memory/stick` in front, both are copied to `PSP/GAME/BT3PSP/` there.
+Tarda unos 15 minutos (traducción + compilación). Copia la carpeta de salida a `PSP/GAME/` de la Memory Stick (o del
+`memstick` de PPSSPP). La carpeta de trabajo `work/` (código traducido) queda junto al script; tras cambiar el paquete,
+vuelve a ejecutar con `--restart`.
 
-## Game files
+## 2. Mapas nativos (opcional, recomendado)
 
-You need a disc image (`.iso`) of your own copy of the USA release, SLUS-21678. Other releases (PAL, Japanese) are
-not supported. From the image, copy `SLUS_216.78` and the `BIN` and `DATA` folders into a `disc` folder next to the
-EBOOT, so that the memory stick has:
+Se generan **en tu PC** desde el juego ya convertido. Requisitos adicionales:
+
+- [PPSSPP](https://www.ppsspp.org/) (para volcar los escenarios), [Blender](https://www.blender.org/) 4.x/5.x
+  (estructura de LOD) y Git Bash.
+- meshoptimizer en WSL: `wsl bash herramientas/mapas/build_meshopt.sh` (descarga
+  [zeux/meshoptimizer](https://github.com/zeux/meshoptimizer) v0.22, MIT, y lo compila con g++; crea `~/mo_venv`).
+
+En Git Bash:
 
 ```
-ms0:/PSP/GAME/BT3PSP/EBOOT.PBP
-ms0:/PSP/GAME/BT3PSP/ps2rc_exc.prx
-ms0:/PSP/GAME/BT3PSP/disc/SLUS_216.78
-ms0:/PSP/GAME/BT3PSP/disc/BIN/DBZP.BIN
-ms0:/PSP/GAME/BT3PSP/disc/DATA/PZS3US0.AFS        (and the other files of the DATA folder)
+export BT3_GAME=/c/PPSSPP/memstick/PSP/GAME/PS2RC_BT3        # la carpeta del juego convertido
+export BT3_PPSSPP='C:\PPSSPP\PPSSPPWindows64.exe'
+bash herramientas/mapas/volcar_escenarios.sh                  # ~2 min por escenario (1..34)
+bash herramientas/mapas/generar_mapas.sh                      # ~30 s por escenario
 ```
 
-Then start **BT3 PSP** from the XMB. In PPSSPP, use the same layout inside its `memstick` folder.
+1. `volcar_escenarios.sh` arranca la demo en cada escenario (`demo_stage=N`) y guarda su geometría estática completa
+   (`stage_dump=1200`) en `work_mapas/stage_dumps/`.
+2. `generar_mapas.sh`: exportación a glTF → celdas y bloques en Blender, cada pieza clasificada como suelo, edificio,
+   árbol/recortado, otros o un tipo propio del escenario → reducción por tipo con meshoptimizer (el suelo como una
+   superficie base más sus capas superpuestas; el cielo como media esfera) → `maps/stage_NN.bt3m` en la carpeta del
+   juego.
 
-## Credits
+Ajustes por escenario y reglas para piezas especiales (por ejemplo las gradas, la casa y la plataforma del Torneo,
+escenario 4) en `herramientas/mapas/stage_rules.json`.
 
-- [arielxflores](https://github.com/arielxflores) for
-  [Tenkaichi3Decomp-Vita](https://github.com/arielxflores/Tenkaichi3Decomp-Vita), the PS Vita port whose code and
-  memory model this PSP port is built on (`port/vita/`)
-- [z3xox](https://github.com/z3xox) and the contributors of
-  [Tenkaichi3Decomp](https://github.com/z3xox/Tenkaichi3Decomp), the PC port, and the authors of the
-  BT3-Decompiled decompilation it uses
-- [Matteo Santoro](https://github.com/Matt-code-d) and [limeking614-dev](https://github.com/limeking614-dev) for
-  fixes carried over from their forks
-- [SandstoneDev](https://github.com/SandstoneDev/PS2RC) for PS2RC, whose crash catcher is used in `port/psp/exc/`
-- Spike, the developer of Dragon Ball Z: Budokai Tenkaichi 3
-- The [PSPDEV](https://pspdev.github.io/) team
-- The third-party code and data used by the port are listed in [THIRD_PARTY.md](THIRD_PARTY.md).
+## Opciones (`ps2rc.cfg` en la carpeta del juego)
 
-## License
+| Opción | Efecto |
+|---|---|
+| `map_native=1` | Usa el mapa nativo del escenario si existe (`maps/stage_NN.bt3m`); por defecto en la carpeta convertida |
+| `map_lod=1` / `2` | Fuerza un nivel de detalle (pruebas) |
+| `demo_direct=1` | Arranca directamente en la batalla de demostración |
+| `demo_skip=N` / `demo_stage=N` | Elige otra pareja de la demo / fuerza el escenario N |
+| `eft_off=bits` | Desactiva grupos de efectos (pruebas de coste): 1 partículas, 2 polvo, 4 cielo animado, 8 agua, 16 escenario, 64 luchadores, 128 HUD… |
+| `pace_maxlag_ms=67` | Retraso máximo que el juego intenta recuperar acelerando (0 = sin límite) |
+| `gs_frameskip=-1` | Salto de fotogramas automático (desactivado por defecto: se ve cortado y la lógica limita a ~0,75x) |
+| `prof=1` | Perfilador: resumen de tiempos en `session.log` |
 
-The port's code is under the [GNU Affero General Public License, version 3](LICENSE), the license of
-Tenkaichi3Decomp's port code since October 2026. The port code it is based on, from before that change, came under
-the MIT license; its notice is kept in [LICENSE-MIT](LICENSE-MIT). `port/psp/exc/` is used under the PS2RC License
-(see `port/psp/exc/LICENSE` and `port/psp/exc/NOTICE.md`). `port/vita/vitagl/vitagl.patch` modifies vitaGL and is
-under vitaGL's license (LGPL-3.0).
+## Medir
 
-The game's code in `src/` and `include/` comes from the decompilation, and the EBOOT's images use the game's
-artwork: they belong to the game's rights holders. This project is not affiliated with or endorsed by them, and
-distributes none of the game's data. You need your own legally obtained copy of the game to use it.
+```
+bash herramientas/pruebas/medir.sh 20 prueba demo_direct=1 demo_skip=1 map_native=1
+bash herramientas/pruebas/probar_mapas.sh 4 29
+```
+
+## Créditos y licencias
+
+- **PS2RC** por SandstoneDev (https://github.com/SandstoneDev/PS2RC, comunidad: https://discord.gg/wV8x46ZTDu).
+  Licencia en `PS2RC/LICENSE` y `PS2RC/NOTICE.md` (sin cambios): uso gratuito, sin datos de juegos.
+- **meshoptimizer** por Arseny Kapoulkine (MIT), descargado por `build_meshopt.sh`; no se incluye aquí.
+- Las direcciones y nombres de funciones del juego se tomaron de
+  [Tenkaichi3Decomp](https://github.com/z3xox/Tenkaichi3Decomp); este repositorio no contiene su código.
+- Port no oficial, sin relación con Bandai Namco, Spike ni Sony. "PlayStation", "PS2" y "PSP" son marcas de Sony
+  Interactive Entertainment.

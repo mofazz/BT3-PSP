@@ -1,0 +1,12 @@
+{
+ "_": "per-stage settings for stage_process.sh: lod_args / meshopt_args are extra key=value options of stage_lod.py / stage_meshopt.py; reglas: a loose part whose box (Blender coordinates: x0 x1 y0 y1, Z up) lies inside 'caja' (with at least min_tris triangles and at most max_dz high) becomes a kind of its own, reduced with lod = [r1, e1, r2, e2] (share of triangles, error; near / far) and never turned into a box. The first rule that matches wins.",
+ "4": {
+  "lod_args": "far=12000",
+  "meshopt_args": "suelo_r2=0.03 suelo_e2=0.2 arbol_r2=0.05 arbol_e2=0.2 edif_e2=0.06 otros_r2=0.01 otros_e2=1 casa_r2=0.35 casa_e2=0.04 plataforma_r2=0.03 plataforma_e2=0.05 gradas_r2=0.6 gradas_e2=0.02",
+  "reglas": [
+   {"nombre": "casa", "caja": [-320, 320, -640, -400], "lod": [0.8, 0.005, 0.5, 0.02]},
+   {"nombre": "plataforma", "caja": [-405, 405, -432, 405], "max_dz": 15, "lod": [0.3, 0.01, 0.1, 0.02]},
+   {"nombre": "gradas", "caja": [-725, 725, -405, 725], "min_tris": 1000, "lod": [0.95, 0.002, 0.8, 0.01]}
+  ]
+ }
+}
