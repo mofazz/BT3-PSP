@@ -34,6 +34,7 @@ Work in progress; not full speed yet. Measured in PPSSPP (its timings are not a 
 | `PS2RC/` | The PS2RC recompiler (licence in `PS2RC/LICENSE`) with the game pack `PS2RC/games/SLUS_216.78_v1.00/`: hooks, native functions, the GS→GE renderer and the native map (`src/gs_ge_map.h`) |
 | `build_psp.bat` / `build_psp.sh` | Build the PSP folder from the ISO (Windows / WSL-Linux) |
 | `herramientas/mapas/` | Stage extraction and native map generation with LOD |
+| `herramientas/ajuste_lod/` | The LOD tuner: a local page to tune each map, compare variants and choose one |
 | `herramientas/pruebas/` | Speed measurement in PPSSPP |
 | `herramientas/config.sh` | The local paths the tools use |
 
@@ -84,6 +85,27 @@ bash herramientas/mapas/generar_mapas.sh                      # ~30 s per stage
 
 Per-stage settings and rules for special pieces (e.g. the stands, the house and the platform of the Tournament,
 stage 4) live in `herramientas/mapas/stage_rules.json`.
+
+### Tuning each map by hand: the LOD tuner
+
+```
+bash herramientas/ajuste_lod/abrir.sh          # opens http://127.0.0.1:8765 (local only)
+```
+
+A page with a 3D viewer, per stage:
+
+- **Preparar estructura**: exports the stage's dump and builds the cells, blocks and kinds in Blender (again after
+  changing a rule).
+- **Reducción por tipo**: for every kind (ground, buildings, trees/cut-outs, others and the stage's own kinds) the
+  share of triangles `r` and the allowed error `e`, near (LOD1) and far (LOD2).
+- **Generar variante** / **4 semillas**: meshoptimizer runs with those settings (or with them ×0.5, ×0.75, ×1 and
+  ×1.5) and each variant is listed with its triangles per kind.
+- **Vista**: the original stage, the near level, the far level, or the game's choice by distance from the viewer's
+  camera; colours by kind and wireframe; the visible triangle count.
+- **Pieza seleccionada**: in the original view, click a building, tree or rock: it can get its own reduction (a rule
+  with its box).
+- **Elegir para el juego**: packs that variant into `maps/stage_NN.bt3m` in the game folder and saves its settings in
+  `stage_rules.json`, so `generar_mapas.sh` makes the same map again. **Probar en PPSSPP** opens that stage.
 
 ## Options (`ps2rc.cfg` in the game folder)
 

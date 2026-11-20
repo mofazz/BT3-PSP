@@ -1,0 +1,370 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ajuste de LOD</title>
+<style>
+  :root { --bg:#16181d; --panel:#1f232a; --line:#2e333c; --fg:#e6e8eb; --dim:#9aa3ae; --acc:#4da3ff; --ok:#3fb950; --warn:#d29922; --bad:#f85149; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); font: 13px/1.4 "Segoe UI", system-ui, sans-serif; }
+  #app { display: grid; grid-template-columns: 390px 1fr; height: 100%; }
+  #side { overflow-y: auto; border-right: 1px solid var(--line); background: var(--panel); padding: 10px 12px 40px; }
+  #view { position: relative; overflow: hidden; }
+  canvas { display: block; }
+  h1 { font-size: 15px; margin: 2px 0 10px; }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); margin: 16px 0 6px; }
+  select, input, button { font: inherit; color: var(--fg); background: #2a2f38; border: 1px solid var(--line); border-radius: 4px; padding: 3px 6px; }
+  button { cursor: pointer; }
+  button:hover { border-color: var(--acc); }
+  button.pri { background: #1f6feb; border-color: #1f6feb; }
+  button:disabled { opacity: .45; cursor: default; }
+  .row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin: 4px 0; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { padding: 2px 3px; text-align: left; }
+  th { color: var(--dim); font-weight: 600; font-size: 11px; }
+  td input[type=number] { width: 60px; }
+  .sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
+  .var { border: 1px solid var(--line); border-radius: 5px; padding: 5px 7px; margin: 4px 0; }
+  .var.sel { border-color: var(--acc); }
+  .var.chosen { box-shadow: inset 3px 0 0 var(--ok); }
+  .var .t { color: var(--dim); font-size: 11px; }
+  .vieja { color: var(--warn); font-size: 11px; }
+  #log { white-space: pre-wrap; font: 11px/1.35 Consolas, monospace; color: var(--dim); max-height: 160px; overflow-y: auto; background: #15171c; border: 1px solid var(--line); border-radius: 4px; padding: 5px; }
+  #hud { position: absolute; left: 10px; top: 8px; background: rgba(0,0,0,.55); padding: 6px 9px; border-radius: 5px; pointer-events: none; }
+  #hud b { color: var(--acc); }
+  #pick { border: 1px solid var(--line); border-radius: 5px; padding: 6px; display: none; }
+  .hint { color: var(--dim); font-size: 11px; }
+  #busy { color: var(--warn); }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="side">
+    <h1>Ajuste de LOD de los mapas</h1>
+    <div class="row">Escenario <select id="stage"></select> <span id="busy"></span></div>
+    <div class="row">
+      <button id="bPrep" title="Exporta el volcado y genera la estructura (celdas, bloques, tipos, cajas) en Blender. Necesario tras cambiar reglas.">Preparar estructura</button>
+      <button id="bPpsspp" title="Abre PPSSPP en este escenario con el mapa aplicado">Probar en PPSSPP</button>
+    </div>
+
+    <h2>Reducción por tipo</h2>
+    <div class="hint">r = parte de triángulos que se busca conservar (0–1), e = error permitido (0–1, relativo al tamaño de la pieza). meshoptimizer para en lo que llegue antes. Cerca = LOD1, lejos = LOD2.</div>
+    <table id="kinds"><thead><tr><th>Tipo</th><th>r cerca</th><th>e cerca</th><th>r lejos</th><th>e lejos</th></tr></thead><tbody></tbody></table>
+    <div class="row">
+      <button class="pri" id="bVar">Generar variante</button>
+      <button id="bSeeds" title="Cuatro variantes: los ajustes actuales ×0,5 ×0,75 ×1 ×1,5">4 semillas</button>
+      <button id="bReset" title="Valores por defecto de cada tipo">Restablecer</button>
+    </div>
+
+    <h2>Variantes</h2>
+    <div id="vars"><div class="hint">Ninguna todavía.</div></div>
+
+    <h2>Vista</h2>
+    <div class="row">
+      <select id="mode">
+        <option value="orig">Original (sin LOD)</option>
+        <option value="lod1">Cerca (LOD1)</option>
+        <option value="lod2">Lejos (LOD2)</option>
+        <option value="game">Juego (según distancia)</option>
+      </select>
+      <label><input type="checkbox" id="cKind"> colores por tipo</label>
+      <label><input type="checkbox" id="cWire"> alambre</label>
+    </div>
+    <div class="hint" id="legend"></div>
+
+    <h2>Pieza seleccionada</h2>
+    <div class="hint">En la vista «Original», haz clic en un objeto (edificio, árbol, roca…) para darle una reducción propia.</div>
+    <div id="pick">
+      <div id="pickInfo"></div>
+      <div class="row">Nombre <input id="rName" size="12" placeholder="casa"> <label><input type="checkbox" id="rOnly" checked> solo esta pieza</label></div>
+      <table><tr><th>r cerca</th><th>e cerca</th><th>r lejos</th><th>e lejos</th></tr>
+        <tr><td><input type="number" id="r1" step="0.05" min="0" max="1" value="0.8"></td><td><input type="number" id="e1" step="0.005" min="0" max="1" value="0.01"></td>
+            <td><input type="number" id="r2" step="0.05" min="0" max="1" value="0.4"></td><td><input type="number" id="e2" step="0.005" min="0" max="1" value="0.03"></td></tr></table>
+      <div class="row"><button class="pri" id="bRule">Crear regla</button></div>
+    </div>
+
+    <h2>Reglas del escenario</h2>
+    <div id="rules"><div class="hint">Ninguna.</div></div>
+
+    <h2>Registro</h2>
+    <div id="log"></div>
+  </div>
+  <div id="view"><div id="hud"></div></div>
+</div>
+
+<script type="importmap">
+{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+               "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/" } }
+</script>
+<script type="module">
+import * as THREE from "three";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+
+const $ = (id) => document.getElementById(id);
+const KCOL = { suelo: 0x5aa05a, edif: 0xe08a3c, arbol: 0x1f6b3a, otros: 0x9a6ad6, cajas: 0xd94848, fondo: 0x3b6fb6, dispersos: 0x888888, todo: 0xcccccc, original: 0xcccccc };
+function kcol(k) { if (KCOL[k] !== undefined) return KCOL[k]; let h = 0; for (const c of k) h = (h * 31 + c.charCodeAt(0)) >>> 0; return new THREE.Color().setHSL((h % 360) / 360, 0.65, 0.55).getHex(); }
+
+// ---------------------------------------------------------------- state
+let S = [], cur = null, params = {}, selVar = null, pickData = null, busy = false;
+
+async function api(path, body) {
+  const r = await fetch(path, body ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {});
+  return r.json();
+}
+function log(s) { const l = $("log"); l.textContent += s + "\n"; l.scrollTop = l.scrollHeight; }
+async function runJob(path, body, what) {
+  if (busy) return null;
+  busy = true; setBusy(what + "…");
+  const { job } = await api(path, body);
+  let j;
+  for (;;) { await new Promise((r) => setTimeout(r, 1200)); j = await api("/api/job/" + job); if (j.state !== "run") break; }
+  log("== " + what + ": " + (j.state === "ok" ? "hecho" : "ERROR") + j.log.split("\n").slice(-8).join("\n"));
+  busy = false; setBusy("");
+  await refresh();
+  return j;
+}
+function setBusy(t) { $("busy").textContent = t; for (const b of document.querySelectorAll("#side button")) b.disabled = !!t; }
+
+async function refresh(keepStage) {
+  S = await api("/api/stages");
+  const sel = $("stage"), prev = keepStage ?? sel.value;
+  sel.innerHTML = S.map((s) => `<option value="${s.stage}">${String(s.stage).padStart(2, "0")}${s.elegida ? " ✓" : ""}${s.estructura ? "" : " (sin preparar)"}</option>`).join("");
+  if (prev && S.find((s) => s.stage == prev)) sel.value = prev;
+  const s = S.find((x) => x.stage == sel.value);
+  const changed = !cur || cur.stage !== s.stage;
+  cur = s;
+  if (changed) { params = JSON.parse(JSON.stringify(s.params)); selVar = s.elegida || null; await loadOriginal(); }
+  renderKinds(); renderVars(); renderRules();
+  if (changed && selVar) await loadVariant(selVar);
+}
+
+// ---------------------------------------------------------------- panels
+function renderKinds() {
+  const kinds = Object.keys(params);
+  $("kinds").tBodies[0].innerHTML = kinds.map((k) => `<tr><td><span class="sw" style="background:#${kcol(k).toString(16).padStart(6, "0")}"></span>${k}</td>` +
+    [0, 1, 2, 3].map((i) => `<td><input type="number" data-k="${k}" data-i="${i}" step="${i % 2 ? 0.005 : 0.05}" min="0" max="1" value="${params[k][i]}"></td>`).join("") + "</tr>").join("");
+  for (const inp of $("kinds").querySelectorAll("input")) inp.onchange = () => { params[inp.dataset.k][+inp.dataset.i] = Math.max(0, Math.min(1, parseFloat(inp.value) || 0)); };
+  $("legend").innerHTML = [...kinds, "cajas", "fondo"].map((k) => `<span class="sw" style="background:#${kcol(k).toString(16).padStart(6, "0")}"></span>${k}`).join(" &nbsp;");
+}
+function renderVars() {
+  const vs = cur.variantes;
+  if (!vs.length) { $("vars").innerHTML = '<div class="hint">Ninguna todavía. Ajusta y pulsa «Generar variante» o «4 semillas».</div>'; return; }
+  $("vars").innerHTML = vs.slice().reverse().map((v) => {
+    const per = Object.entries(v.tris).map(([k, t]) => `${k} ${t[0]}/${t[1]}`).join(" · ");
+    return `<div class="var ${v.id === selVar ? "sel" : ""} ${v.id === cur.elegida ? "chosen" : ""}">
+      <div class="row"><b>${v.id}</b> ${v.label} ${v.id === cur.elegida ? '<span style="color:var(--ok)">● elegida</span>' : ""} ${v.vieja ? '<span class="vieja">estructura antigua</span>' : ""}</div>
+      <div>cerca <b>${v.lod1}</b> · lejos <b>${v.lod2}</b> triángulos (sin cajas ni cielo)</div>
+      <div class="t">${per}</div>
+      <div class="row"><button data-v="${v.id}" data-a="ver">Ver</button><button data-v="${v.id}" data-a="ajustes">Usar sus ajustes</button><button class="pri" data-v="${v.id}" data-a="elegir">Elegir para el juego</button></div></div>`;
+  }).join("");
+  for (const b of $("vars").querySelectorAll("button")) b.onclick = async () => {
+    const v = cur.variantes.find((x) => x.id === b.dataset.v);
+    if (b.dataset.a === "ver") { selVar = v.id; renderVars(); await loadVariant(v.id); if ($("mode").value === "orig") { $("mode").value = "lod1"; applyMode(); } }
+    if (b.dataset.a === "ajustes") { params = JSON.parse(JSON.stringify(v.params)); renderKinds(); }
+    if (b.dataset.a === "elegir") await runJob("/api/apply", { stage: cur.stage, variant: v.id }, "Aplicar " + v.id);
+  };
+}
+function renderRules() {
+  const rs = cur.reglas || [];
+  $("rules").innerHTML = rs.length ? rs.map((r, i) => `<div class="row"><span class="sw" style="background:#${kcol(r.nombre).toString(16).padStart(6, "0")}"></span><b>${r.nombre}</b>
+     <span class="t">caja [${r.caja.map((x) => Math.round(x)).join(", ")}] lod [${r.lod.join(", ")}]${r.min_tris ? " ≥" + r.min_tris + " tri" : ""}</span> <button data-i="${i}">quitar</button></div>`).join("") +
+     '<div class="hint">Tras cambiar reglas, pulsa «Preparar estructura» y genera variantes nuevas.</div>' : '<div class="hint">Ninguna.</div>';
+  for (const b of $("rules").querySelectorAll("button")) b.onclick = async () => { await api("/api/rule", { stage: cur.stage, delete: true, rule: rs[+b.dataset.i] }); await refresh(); };
+}
+
+// ---------------------------------------------------------------- 3D
+const view = $("view");
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(window.devicePixelRatio);
+view.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x101216);
+scene.add(new THREE.AmbientLight(0xffffff, 1.0));
+const cam = new THREE.PerspectiveCamera(55, 1, 1, 200000);
+cam.position.set(600, 400, 600);
+const ctl = new OrbitControls(cam, renderer.domElement);
+ctl.target.set(0, 0, 0);
+function resize() { const w = view.clientWidth, h = view.clientHeight; renderer.setSize(w, h); cam.aspect = w / h; cam.updateProjectionMatrix(); }
+window.addEventListener("resize", resize); resize();
+const loader = new GLTFLoader();
+let gOrig = null, gVar = null, hl = null;
+
+function kindOf(o) {
+  for (let p = o; p; p = p.parent) {
+    const n = p.name || "";
+    if (/^fondo/.test(n)) return { lv: 0, k: "fondo" };
+    if (/^dispersos/.test(n)) return { lv: 0, k: "dispersos" };
+    let m = n.match(/_LOD([012])(?:_([a-z]+))?$/);
+    if (m) return { lv: +m[1], k: m[2] || "todo" };
+  }
+  return { lv: -1, k: "original" };
+}
+function prepModel(root) {
+  root.traverse((o) => {
+    if (!o.isMesh) return;
+    o.userData.kind = kindOf(o);
+    o.userData.mat = o.material;
+    const mats = Array.isArray(o.material) ? o.material : [o.material];
+    for (const m of mats) { m.side = THREE.DoubleSide; if (m.map) m.map.colorSpace = THREE.SRGBColorSpace; }
+  });
+}
+async function loadOriginal() {
+  if (gOrig) scene.remove(gOrig);
+  if (gVar) { scene.remove(gVar); gVar = null; }
+  clearPick();
+  const nn = String(cur.stage).padStart(2, "0");
+  try {
+    const g = await loader.loadAsync(`/files/export/s${nn}/s${nn}.gltf`);
+    gOrig = g.scene; prepModel(gOrig); scene.add(gOrig);
+    buildIslands(gOrig);
+    const box = new THREE.Box3().setFromObject(gOrig, true), c = box.getCenter(new THREE.Vector3());
+    ctl.target.set(0, 0, 0); cam.position.set(c.x + 700, 450, c.z + 700);
+  } catch (e) { log("Sin exportación del escenario " + nn + ": pulsa «Preparar estructura»."); gOrig = null; }
+  applyMode();
+}
+async function loadVariant(vid) {
+  if (gVar) scene.remove(gVar);
+  const nn = String(cur.stage).padStart(2, "0");
+  const g = await loader.loadAsync(`/files/ajuste/s${nn}/${vid}/mapa.gltf?${Date.now()}`);
+  gVar = g.scene; prepModel(gVar); scene.add(gVar);
+  // blocks (GRP_*, their switch distance) and which block each cell belongs to (extras w3d_grupo)
+  gVar.userData.blocks = {};
+  gVar.traverse((o) => {
+    if (/^GRP_/.test(o.name)) { const b = new THREE.Box3().setFromObject(o, true); gVar.userData.blocks[o.name.slice(4)] = { box: b, d1: (o.userData.w3d_lod_distancias || [60])[0] }; }
+  });
+  applyMode();
+}
+function cellBlock(o) { for (let p = o; p; p = p.parent) if (p.userData && p.userData.w3d_grupo) return p.userData.w3d_grupo; return null; }
+function blockOf(o) { for (let p = o; p; p = p.parent) if (/^GRP_/.test(p.name)) return p.name.slice(4); return null; }
+
+function applyMode() {
+  const mode = $("mode").value, colour = $("cKind").checked, wire = $("cWire").checked;
+  if (gOrig) gOrig.visible = mode === "orig" || !gVar;
+  if (gVar) gVar.visible = mode !== "orig";
+  for (const root of [gOrig, gVar]) if (root) root.traverse((o) => {
+    if (!o.isMesh) return;
+    const k = o.userData.kind;
+    if (root === gVar) o.visible = k.lv === 0 && k.k !== "todo" ? true : mode === "lod1" ? k.lv === 1 : mode === "lod2" ? k.lv === 2 : mode === "game" ? k.lv >= 1 : false;
+    if (colour) { o.material = o.userData.flat || (o.userData.flat = new THREE.MeshBasicMaterial({ color: kcol(k.k === "todo" ? "original" : k.k), side: THREE.DoubleSide })); }
+    else o.material = o.userData.mat;
+    const mats = Array.isArray(o.material) ? o.material : [o.material];
+    for (const m of mats) m.wireframe = wire;
+  });
+}
+function gameLod() {                                   // (the game's rule: a block near the camera -> its cells' LOD1)
+  if (!gVar || $("mode").value !== "game") return;
+  const near = {};
+  for (const [b, v] of Object.entries(gVar.userData.blocks)) near[b] = v.box.distanceToPoint(cam.position) < v.d1;
+  gVar.traverse((o) => {
+    if (!o.isMesh) return;
+    const k = o.userData.kind;
+    if (k.lv === 1) o.visible = !!near[cellBlock(o)];
+    if (k.lv === 2) o.visible = !near[blockOf(o)];
+  });
+}
+function countTris() {
+  let t = 0;
+  scene.traverseVisible((o) => { if (o.isMesh && o !== hl) { const g = o.geometry; t += (g.index ? g.index.count : g.attributes.position.count) / 3; } });
+  return Math.round(t);
+}
+function loop() {
+  requestAnimationFrame(loop);
+  ctl.update(); gameLod();
+  renderer.render(scene, cam);
+  const p = cam.position;
+  $("hud").innerHTML = `Escenario <b>${cur ? String(cur.stage).padStart(2, "0") : "-"}</b> · ${$("mode").selectedOptions[0].text} ${gVar && $("mode").value !== "orig" ? "· " + selVar : ""}<br>Triángulos visibles: <b>${countTris()}</b> · cámara ${p.x.toFixed(0)} ${p.y.toFixed(0)} ${p.z.toFixed(0)}`;
+}
+loop();
+
+// ---------------------------------------------------------------- picking (original view): loose parts as stage_lod.py sees them
+let isl = null;
+function buildIslands(root) {
+  const tris = [], key = new Map(), par = [];
+  const find = (i) => { while (par[i] !== i) { par[i] = par[par[i]]; i = par[i]; } return i; };
+  const v = new THREE.Vector3();
+  root.updateMatrixWorld(true);
+  root.traverse((o) => {
+    if (!o.isMesh) return;
+    const g = o.geometry, pos = g.attributes.position, idx = g.index, n = idx ? idx.count : pos.count;
+    const base = tris.length;
+    o.userData.triBase = base;
+    for (let t = 0; t < n; t += 3) {
+      const ti = tris.length; par.push(ti); const pts = [];
+      for (let c = 0; c < 3; c++) {
+        v.fromBufferAttribute(pos, idx ? idx.getX(t + c) : t + c).applyMatrix4(o.matrixWorld);
+        pts.push(v.x, v.y, v.z);
+        const k = `${v.x.toFixed(1)},${(-v.z).toFixed(1)},${v.y.toFixed(1)}`;      // (Blender: x, -z, y)
+        const j = key.get(k);
+        if (j === undefined) key.set(k, ti); else { const a = find(j), b = find(ti); if (a !== b) par[a] = b; }
+      }
+      tris.push(pts);
+    }
+  });
+  isl = { tris, root: tris.map((_, i) => find(i)) };
+}
+const ray = new THREE.Raycaster(), mouse = new THREE.Vector2();
+let down = null;
+renderer.domElement.addEventListener("pointerdown", (e) => { down = [e.clientX, e.clientY]; });
+renderer.domElement.addEventListener("pointerup", (e) => {
+  if (!down || Math.hypot(e.clientX - down[0], e.clientY - down[1]) > 4) return;
+  if ($("mode").value !== "orig" || !gOrig || !isl) return;
+  const r = renderer.domElement.getBoundingClientRect();
+  mouse.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
+  ray.setFromCamera(mouse, cam);
+  const hit = ray.intersectObject(gOrig, true)[0];
+  if (!hit) return;
+  pickIsland(isl.root[hit.object.userData.triBase + hit.faceIndex]);
+});
+function clearPick() { if (hl) { scene.remove(hl); hl.geometry.dispose(); hl = null; } $("pick").style.display = "none"; pickData = null; }
+function pickIsland(id) {
+  clearPick();
+  const ps = [];
+  let n = 0, mn = [1e9, 1e9, 1e9], mx = [-1e9, -1e9, -1e9];
+  isl.tris.forEach((t, i) => {
+    if (isl.root[i] !== id) return;
+    n++; ps.push(...t);
+    for (let c = 0; c < 9; c += 3) {
+      const b = [t[c], -t[c + 2], t[c + 1]];         // Blender coordinates
+      for (let a = 0; a < 3; a++) { mn[a] = Math.min(mn[a], b[a]); mx[a] = Math.max(mx[a], b[a]); }
+    }
+  });
+  const g = new THREE.BufferGeometry(); g.setAttribute("position", new THREE.Float32BufferAttribute(ps, 3));
+  hl = new THREE.Mesh(g, new THREE.MeshBasicMaterial({ color: 0xffd400, transparent: true, opacity: 0.6, side: THREE.DoubleSide, depthTest: false }));
+  hl.renderOrder = 10; scene.add(hl);
+  pickData = { n, mn, mx };
+  $("pickInfo").innerHTML = `<b>${n}</b> triángulos · ancho ${(mx[0] - mn[0]).toFixed(0)} × ${(mx[1] - mn[1]).toFixed(0)}, alto ${(mx[2] - mn[2]).toFixed(0)}`;
+  $("pick").style.display = "block";
+}
+$("bRule").onclick = async () => {
+  if (!pickData) return;
+  const name = ($("rName").value || "").toLowerCase().replace(/[^a-z]/g, "");
+  if (!name || ["suelo", "edif", "arbol", "otros", "todo", "cajas"].includes(name)) { alert("Pon un nombre propio, solo letras (p. ej. casa, torre, rocas)."); return; }
+  const { mn, mx, n } = pickData, pad = 2;
+  const rule = { nombre: name, caja: [mn[0] - pad, mx[0] + pad, mn[1] - pad, mx[1] + pad],
+                 lod: ["r1", "e1", "r2", "e2"].map((i) => Math.max(0, Math.min(1, parseFloat($(i).value) || 0))) };
+  if ($("rOnly").checked) rule.min_tris = Math.max(1, Math.floor(n * 0.9));
+  await api("/api/rule", { stage: cur.stage, rule });
+  log(`Regla «${name}» guardada. Pulsa «Preparar estructura» para aplicarla.`);
+  clearPick(); await refresh();
+};
+
+// ---------------------------------------------------------------- buttons
+$("stage").onchange = () => refresh();
+$("mode").onchange = applyMode; $("cKind").onchange = applyMode; $("cWire").onchange = applyMode;
+$("bPrep").onclick = () => runJob("/api/prepare", { stage: cur.stage }, "Preparar estructura " + cur.stage);
+$("bVar").onclick = async () => {
+  const j = await runJob("/api/variant", { stage: cur.stage, params, label: "manual" }, "Variante");
+  if (j && j.state === "ok") { selVar = j.result.id; renderVars(); await loadVariant(selVar); if ($("mode").value === "orig") { $("mode").value = "lod1"; applyMode(); } }
+};
+$("bSeeds").onclick = async () => {
+  const j = await runJob("/api/seeds", { stage: cur.stage, params }, "4 semillas");
+  if (j && j.state === "ok") { selVar = j.result[2].id; renderVars(); await loadVariant(selVar); }
+};
+$("bReset").onclick = () => { const p = cur.params; for (const k of Object.keys(params)) params[k] = (p[k] || params[k]).slice(); renderKinds(); };
+$("bPpsspp").onclick = () => runJob("/api/ppsspp", { stage: cur.stage }, "PPSSPP");
+refresh();
+</script>
+</body>
+</html>
