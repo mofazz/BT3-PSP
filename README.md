@@ -119,7 +119,9 @@ stage:
 | `demo_direct=1` | Start straight in the demo battle |
 | `demo_skip=N` / `demo_stage=N` | Another demo pairing / force stage N |
 | `eft_off=bits` | Turn effect groups off (cost tests): 1 particles, 2 dust, 4 scrolling sky, 8 water, 16 stage, 64 fighters, 128 HUD… |
-| `gs_3d2d=1` | **Real PSP-3000**: every 3D triangle (stage, fighters, native map) projected by the CPU and drawn as 2D, because the console's GE drops the 3D batches PPSSPP draws (black or broken stage). Much slower; `gs_3d2d_split=0` skips cutting big triangles (faster, more texture warping). From kit 0.0.6–0.0.8 by giogitsuspended-sketch |
+| `gs_3d2d=1` | **Real PSP-3000**: every 3D triangle (stage, fighters, native map) projected by the CPU and drawn as 2D, because the console's GE drops the 3D batches PPSSPP draws (black or broken stage). Slower (PPSSPP 0.22x against 0.56x); triangles are split only where their depth changes enough to bend the texture (`gs_3d2d_wr`, default 1.25; `gs_3d2d_split=0`: never). From kit 0.0.6–0.0.8 by giogitsuspended-sketch |
+| `gs_ndc=1` | Experiment for the real PSP: the 3D projection sent to the GE in the standard form (x/w, y/w in −1..1, viewport 480×272) instead of pixels; same picture in PPSSPP. Try it with `gs_3d2d=0` on the console |
+| `gs_diag3d=1` | Diagnostics in `session.log` (`diag3d:` lines, frames 30, 90 and every 600): the projection and, per 3D batch, the ranges of x/w, y/w, z/w, w and how many vertices are behind the camera, out of the depth range or off the band |
 | `pace_maxlag_ms=67` | The most lag the game tries to win back by running faster (0 = no limit) |
 | `gs_frameskip=-1` | Automatic frame skip (off by default: it looks choppy and the game logic caps it at ~0.75x) |
 | `prof=1` | Profiler: a summary of where the time goes in `session.log` |

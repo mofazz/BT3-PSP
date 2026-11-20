@@ -35,6 +35,7 @@
 #define GE_Z_OFF 0x1B0000u                            /* 16-bit Z (to 0x1F4000) */
 #define GE_LIST_BYTES (320u << 10)                 /* battle: ~1900 3D batches a frame */
 static uint32_t ge_arena_bytes = 640u << 10;
+static int ge_opt(const char *k, int def);
 /* a block of the kernel's user partition (the C heap has no room for it), 64-byte aligned; NULL = none */
 void *ge_kalloc(const char *name, uint32_t bytes)
 {
@@ -104,7 +105,8 @@ static int ge_init(void)
     /* 3D draws (native VU1 programs, gs_ge_vu1.h): pixel = ndc (viewport scale 1 at 2048, offset 2048),
        z = 32767.5 + 32767.5 ndc_z; identity view / model; the projection is set per batch */
     sceGuOffset(2048, 2048);
-    sceGuViewport(2048, 2048, 2, -2);
+    if (ge_opt("gs_ndc", 0)) sceGuViewport(2048 + 240, 2048 + 136, 480, 272);   /* (gs_ndc: gs_ge_vu1.h nat_set_proj) */
+    else sceGuViewport(2048, 2048, 2, -2);
     sceGuDepthRange(0, 65535);
     sceGuEnable(GU_CLIP_PLANES);
     {

@@ -100,6 +100,26 @@ static ScePspFMatrix4 nat_bones[2];                   /* the two bone matrices o
 static int nat_3d2d = -1;
 static int nat_3d2d_on(void) { if (nat_3d2d < 0) nat_3d2d = ge_opt("gs_3d2d", 0); return nat_3d2d; }
 static ScePspFMatrix4 nat_proj_last;                  /* the projection sent last (not sent again) */
+/* ps2rc.cfg gs_ndc=1 (experiment for the real PSP): the projection's x / y are pixels (x / w = 0..480, viewport scale
+   1), which PPSSPP accepts; the real GE may reject vertices that far outside the -1..1 clip range. With gs_ndc the GE
+   gets the same projection in the standard form (x / w, y / w in -1..1, viewport 480 x 272 at 2048 + centre, gs_ge.h)
+   - the same pixels; the CPU tests keep the pixel form (nat_proj) */
+static int nat_ndc = -1;
+static void nat_set_proj(const ScePspFMatrix4 *m)
+{
+    if (ge_weq(m, &nat_proj_last, 16)) return;
+    nat_proj_last = *m;
+    if (nat_ndc < 0) nat_ndc = ge_opt("gs_ndc", 0);
+    if (!nat_ndc) { sceGuSetMatrix(GU_PROJECTION, m); return; }
+    ScePspFMatrix4 n = *m;
+    const ScePspFVector4 *in[4] = {&m->x, &m->y, &m->z, &m->w};
+    ScePspFVector4 *out[4] = {&n.x, &n.y, &n.z, &n.w};
+    for (int i = 0; i < 4; i++) {
+        out[i]->x = (in[i]->x - 240.0f * in[i]->w) / 240.0f;
+        out[i]->y = (136.0f * in[i]->w - in[i]->y) / 136.0f;
+    }
+    sceGuSetMatrix(GU_PROJECTION, &n);
+}
 
 /* the GE drops a whole triangle when a vertex lands outside its 4096-pixel guard band (the stage's ground near the
    camera: a black wedge). Such triangles are cut in four, again and again (object-space midpoints: the texture
@@ -364,22 +384,160 @@ static void nat_draw_2d(GeV3 *v, uint32_t n)
     }
     sceGuDrawArray(GU_TRIANGLES, GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_32BITF | GU_TRANSFORM_2D, (int)n, NULL, o);
 }
+/* gs_3d2d, the fast way: each vertex projected once (strips share them); a triangle inside the band and in front
+   goes out at once, the others through the exact cutter (nat_tri_sh); a triangle is split (object-space midpoints,
+   up to 3 times) only where its depth changes enough to bend the texture: w max / w min above gs_3d2d_wr (default
+   1.25) and an edge longer than 24 pixels. Output staged, then one draw per batch */
+typedef struct { float x, y, z, w; } NatClip;
+static NatClip *nat_c2;                                /* (taken on first use: 64 KB + 72 KB, gs_3d2d only) */
+static GeV *nat_o2;
+static uint32_t nat_o2n;
+#define NAT_O2_MAX 3072
+static float nat_wr = -1.0f;
+static void nat_o2_flush(void)
+{
+    if (!nat_o2n) return;
+    GeV *o = ge_getmem(nat_o2n * sizeof(GeV));
+    memcpy(o, nat_o2, nat_o2n * sizeof(GeV));
+    sceGuDrawArray(GU_TRIANGLES, GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_32BITF | GU_TRANSFORM_2D, (int)nat_o2n, NULL, o);
+    nat_o2n = 0;
+}
+static void nat_clip_of(const GeV3 *a, NatClip *q)
+{
+    const ScePspFMatrix4 *m = &nat_proj;
+    q->x = a->x * m->x.x + a->y * m->y.x + a->z * m->z.x + m->w.x;
+    q->y = a->x * m->x.y + a->y * m->y.y + a->z * m->z.y + m->w.y;
+    q->z = a->x * m->x.z + a->y * m->y.z + a->z * m->z.z + m->w.z;
+    q->w = a->x * m->x.w + a->y * m->y.w + a->z * m->z.w + m->w.w;
+}
+static void nat_emit(const GeV3 *a, const NatClip *q)
+{
+    if (nat_o2n >= NAT_O2_MAX) nat_o2_flush();
+    GeV *o = &nat_o2[nat_o2n++];
+    const float iw = q->w > 1e-6f ? 1.0f / q->w : 1e6f;
+    const float z = 32767.5f + 32767.5f * q->z * iw;
+    o->u = a->u * (nat_tex ? (float)nat_tex->w : 1.0f); o->v = a->v * (nat_tex ? (float)nat_tex->h : 1.0f); o->c = a->c;
+    o->x = q->x * iw; o->y = q->y * iw; o->z = z < 0.0f ? 0.0f : z > 65535.0f ? 65535.0f : z;
+}
+static int nat_inband(const NatClip *q)
+{
+    return q->w >= NAT_WMIN && q->x >= -1500.0f * q->w && q->x <= (480.0f + 1500.0f) * q->w
+           && q->y >= -1500.0f * q->w && q->y <= (272.0f + 1500.0f) * q->w;
+}
+static void nat_tri2d(const GeV3 *a, const GeV3 *b, const GeV3 *c, const NatClip *qa, const NatClip *qb,
+                      const NatClip *qc, int depth)
+{
+    if (depth < 3 && nat_wr > 1.0f) {
+        float w0 = qa->w, w1 = qb->w, w2 = qc->w;
+        float lo = w0 < w1 ? (w0 < w2 ? w0 : w2) : (w1 < w2 ? w1 : w2), hi = w0 > w1 ? (w0 > w2 ? w0 : w2) : (w1 > w2 ? w1 : w2);
+        if (lo > 1e-6f && hi > lo * nat_wr) {
+            float ax = qa->x / w0, ay = qa->y / w0, bx = qb->x / w1, by = qb->y / w1, cx = qc->x / w2, cy = qc->y / w2;
+            float e = fabsf(ax - bx) + fabsf(ay - by), f = fabsf(bx - cx) + fabsf(by - cy), g = fabsf(cx - ax) + fabsf(cy - ay);
+            if (e > 24.0f || f > 24.0f || g > 24.0f) {
+                GeV3 ab = nat_mid(a, b), bc = nat_mid(b, c), ca = nat_mid(c, a);
+                NatClip qab = {(qa->x + qb->x) * 0.5f, (qa->y + qb->y) * 0.5f, (qa->z + qb->z) * 0.5f, (w0 + w1) * 0.5f};
+                NatClip qbc = {(qb->x + qc->x) * 0.5f, (qb->y + qc->y) * 0.5f, (qb->z + qc->z) * 0.5f, (w1 + w2) * 0.5f};
+                NatClip qca = {(qc->x + qa->x) * 0.5f, (qc->y + qa->y) * 0.5f, (qc->z + qa->z) * 0.5f, (w2 + w0) * 0.5f};
+                nat_tri2d(a, &ab, &ca, qa, &qab, &qca, depth + 1);
+                nat_tri2d(&ab, b, &bc, &qab, qb, &qbc, depth + 1);
+                nat_tri2d(&ca, &bc, c, &qca, &qbc, qc, depth + 1);
+                nat_tri2d(&ab, &bc, &ca, &qab, &qbc, &qca, depth + 1);
+                return;
+            }
+        }
+    }
+    nat_emit(a, qa); nat_emit(b, qb); nat_emit(c, qc);
+}
+static void nat_draw3_2d(int prim, GeV3 *v, uint32_t n)
+{
+    if (!nat_c2) {
+        nat_c2 = ge_kalloc("gs_3d2d_clip", 4096 * sizeof(NatClip));
+        nat_o2 = ge_kalloc("gs_3d2d_out", NAT_O2_MAX * sizeof(GeV));
+        if (nat_wr < 0) { const char *e = hle_cfg_get("gs_3d2d_wr"); nat_wr = e ? (float)atof(e) : 1.25f; }
+        if (!ge_opt("gs_3d2d_split", 1)) nat_wr = 0.0f;
+        if (!nat_c2 || !nat_o2) { LOG("gs_3d2d: no memory for the CPU projection\n"); nat_3d2d = 0; return; }
+    }
+    if (n > 4096) n = 4096;
+    for (uint32_t i = 0; i < n; i++) nat_clip_of(&v[i], &nat_c2[i]);
+    nat_o2n = 0;
+    for (uint32_t i = 2; i < n; i++) {
+        if (prim == 3 && i % 3 != 2) continue;
+        uint32_t ia = prim == 5 ? 0 : i - 2, ib = i - 1, ic = i;
+        if (prim == 4 && (i & 1)) { uint32_t t = ia; ia = ib; ib = t; }
+        const NatClip *qa = &nat_c2[ia], *qb = &nat_c2[ib], *qc = &nat_c2[ic];
+        if (nat_inband(qa) && nat_inband(qb) && nat_inband(qc)) {
+            nat_tri2d(&v[ia], &v[ib], &v[ic], qa, qb, qc, 0);
+            continue;
+        }
+        if (qa->x > 480.0f * qa->w && qb->x > 480.0f * qb->w && qc->x > 480.0f * qc->w) continue;   /* off one side */
+        if (qa->x < 0.0f && qb->x < 0.0f && qc->x < 0.0f) continue;
+        if (qa->y > 272.0f * qa->w && qb->y > 272.0f * qb->w && qc->y > 272.0f * qc->w) continue;
+        if (qa->y < 0.0f && qb->y < 0.0f && qc->y < 0.0f) continue;
+        nat_cn = 0;
+        nat_tri_sh(&v[ia], &v[ib], &v[ic]);           /* near plane and band: exact pieces */
+        for (uint32_t k = 0; k + 2 < nat_cn; k += 3) {
+            NatClip q0, q1, q2;
+            nat_clip_of(&nat_cv[k], &q0); nat_clip_of(&nat_cv[k + 1], &q1); nat_clip_of(&nat_cv[k + 2], &q2);
+            nat_tri2d(&nat_cv[k], &nat_cv[k + 1], &nat_cv[k + 2], &q0, &q1, &q2, 0);
+        }
+    }
+    nat_o2_flush();
+}
+/* ps2rc.cfg gs_diag3d=1: what the 3D batches give the GE, to learn why the real PSP-3000 drops them - every 600
+   frames, the first 12 batches of a frame: program, primitive, vertex count, the projection sent, and per batch the
+   range of x / w, y / w, z / w and w, how many vertices have w <= 0, |z / w| > 1, or lie outside the 4096-pixel band */
+static int nat_diag = -1;
+static uint32_t nat_diag_frame = 0xFFFFFFFFu, nat_diag_left, nat_diag_q[3];   /* (quota per source: draw3, fighter, map) */
+static void nat_diag_log(const char *src, int prim, const GeV3 *v, uint32_t n);
+/* 1 = this batch is one of the logged ones (the frame's bookkeeping done here) */
+static int nat_diag_take(int src)
+{
+    if (nat_diag < 0) nat_diag = ge_opt("gs_diag3d", 0);
+    if (!nat_diag) return 0;
+    if ((uint32_t)ge_st_flips != nat_diag_frame) {
+        nat_diag_frame = (uint32_t)ge_st_flips;
+        static uint32_t first;                         /* (frames counted from the first 3D draw: 30, 90, then every 600) */
+        if (!first) first = nat_diag_frame ? nat_diag_frame : 1;
+        const uint32_t k = nat_diag_frame - first;
+        nat_diag_left = (k == 30 || k == 90 || (k > 90 && k % 600 == 90)) ? 18 : 0;
+        nat_diag_q[0] = nat_diag_q[1] = nat_diag_q[2] = 6;
+        if (nat_diag_left) {
+            const ScePspFMatrix4 *m = &nat_proj;
+            LOG("diag3d: frame %u, %s, ndc %d, 3d2d %d; projection (columns) x %.4g %.4g %.4g %.4g | y %.4g %.4g %.4g %.4g | z %.4g %.4g %.4g %.4g | w %.4g %.4g %.4g %.4g\n",
+                nat_diag_frame, nat_ndc > 0 ? "viewport 480x272" : "viewport 2x-2 (pixels)", nat_ndc > 0, nat_3d2d > 0,
+                m->x.x, m->y.x, m->z.x, m->w.x, m->x.y, m->y.y, m->z.y, m->w.y, m->x.z, m->y.z, m->z.z, m->w.z,
+                m->x.w, m->y.w, m->z.w, m->w.w);
+        }
+    }
+    if (!nat_diag_left || !nat_diag_q[src]) return 0;
+    nat_diag_left--;
+    nat_diag_q[src]--;
+    return 1;
+}
+static void nat_diag3d(int prim, const GeV3 *v, uint32_t n) { if (nat_diag_take(0)) nat_diag_log("draw3", prim, v, n); }
+static void nat_diag_log(const char *src, int prim, const GeV3 *v, uint32_t n)
+{
+    float mn[4] = {1e30f, 1e30f, 1e30f, 1e30f}, mx[4] = {-1e30f, -1e30f, -1e30f, -1e30f};
+    uint32_t wneg = 0, zout = 0, band = 0;
+    for (uint32_t i = 0; i < n; i++) {
+        NatClip q;
+        nat_clip_of(&v[i], &q);
+        if (q.w <= 0.0f) { wneg++; continue; }
+        const float r[4] = {q.x / q.w, q.y / q.w, q.z / q.w, q.w};
+        for (int k = 0; k < 4; k++) { if (r[k] < mn[k]) mn[k] = r[k]; if (r[k] > mx[k]) mx[k] = r[k]; }
+        zout += r[2] < -1.0f || r[2] > 1.0f;
+        band += r[0] < -1800.0f || r[0] > 2280.0f || r[1] < -1900.0f || r[1] > 2170.0f;
+    }
+    if (wneg == n) { LOG("diag3d:   %s prog %d prim %d n %u: every vertex behind the camera (w <= 0)\n", src, nat_prog, prim, n); return; }
+    LOG("diag3d:   %s prog %d prim %d n %u: x/w %.1f..%.1f  y/w %.1f..%.1f  z/w %.3f..%.3f  w %.3g..%.3g; w<=0 %u, |z/w|>1 %u, off band %u\n",
+        src, nat_prog, prim, n, mn[0], mx[0], mn[1], mx[1], mn[2], mx[2], mn[3], mx[3], wneg, zout, band);
+}
 static void nat_draw3_(int prim, GeV3 *v, uint32_t n)
 {
     static int on = -1;
     if (on < 0) on = ge_opt("gs_clip", 1);
-    if (nat_3d2d_on()) {                              /* every triangle through the CPU cutter, then 2D */
-        nat_cn = 0;
-        for (uint32_t i = 2; i < n; i++) {
-            if (prim == 3 && i % 3 != 2) continue;
-            const GeV3 *a = prim == 5 ? &v[0] : &v[i - 2], *b = &v[i - 1], *c = &v[i];
-            if (prim == 4 && (i & 1)) { const GeV3 *t = a; a = b; b = t; }
-            if (nat_cn + 36 > NAT_CLIP_MAX) { nat_draw_2d(nat_cv, nat_cn); nat_cn = 0; }
-            nat_tri_sh(a, b, c);
-        }
-        if (nat_cn) nat_draw_2d(nat_cv, nat_cn);
-        return;
-    }
+    nat_diag3d(prim, v, n);
+    if (nat_3d2d_on()) { nat_draw3_2d(prim, v, n); return; }
     int bad = 0;
     static int oc[4096], hc[4096];                    /* each vertex's out code and plane bits, once */
     const int sides = 64 | 128 | 256 | 512;
@@ -544,7 +702,7 @@ static int nat_begin_(uint32_t sqa, const GeTex **t)
         col[i]->z = (s[2] * zs - 32767.5f * s[3]) / 32767.5f * nat_zk();
         col[i]->w = s[3];
     }
-    if (!ge_weq(&m, &nat_proj_last, 16)) { sceGuSetMatrix(GU_PROJECTION, &m); nat_proj_last = m; }
+    nat_set_proj(&m);
     nat_proj = m;
     return (int)(p & 7);
 }
@@ -970,7 +1128,7 @@ static void nat_proj_send(uint32_t sqa, int ctx)       /* the projection of nat_
         col[i]->z = (q[2] * zs - 32767.5f * q[3]) / 32767.5f * nat_zk();
         col[i]->w = q[3];
     }
-    if (!ge_weq(&m, &nat_proj_last, 16)) { sceGuSetMatrix(GU_PROJECTION, &m); nat_proj_last = m; }
+    nat_set_proj(&m);
     nat_proj = m;
 }
 static int mc_seg_one_proj(void)                       /* program 0: both contexts project alike */
@@ -1650,11 +1808,13 @@ static void nat_bone(int idx, uint32_t qa, uint32_t ofs)
    (the kit's version called itself when gs_3d2d was off: fixed) */
 static void nat_draw_w(int prim, GeVW *v, uint32_t n)
 {
-    if (!nat_3d2d_on()) {
+    const int d2 = nat_3d2d_on(), dg = nat_diag_take(1);
+    if (!d2 && !dg) {
         sceGuDrawArray(prim, GU_WEIGHTS(2) | GU_WEIGHT_32BITF | GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_32BITF
                        | GU_TRANSFORM_3D, (int)n, NULL, v);
         return;
     }
+    const uint32_t n0 = n;
     GeV3 t[96];
     if (n > 96) n = 96;
     const ScePspFMatrix4 *A = &nat_bones[0], *B = &nat_bones[1];
@@ -1664,6 +1824,12 @@ static void nat_draw_w(int prim, GeVW *v, uint32_t n)
         t[i].y = w0 * (x * A->x.y + y * A->y.y + z * A->z.y + A->w.y) + w1 * (x * B->x.y + y * B->y.y + z * B->z.y + B->w.y);
         t[i].z = w0 * (x * A->x.z + y * A->y.z + z * A->z.z + A->w.z) + w1 * (x * B->x.z + y * B->y.z + z * B->z.z + B->w.z);
         t[i].u = v[i].u; t[i].v = v[i].v; t[i].c = v[i].c;
+    }
+    if (dg) nat_diag_log("fighter (CPU-skinned)", prim, t, n);
+    if (!d2) {
+        sceGuDrawArray(prim, GU_WEIGHTS(2) | GU_WEIGHT_32BITF | GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_32BITF
+                       | GU_TRANSFORM_3D, (int)n0, NULL, v);
+        return;
     }
     nat_draw3(prim, t, n);
 }

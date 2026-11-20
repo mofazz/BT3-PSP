@@ -282,6 +282,7 @@ static void map_draw(void)
                         nat_tex = &map_gt;
                     } else { sceGuDisable(GU_TEXTURE_2D); nat_tex = NULL; }
                 }
+                if (nat_diag_take(2)) nat_diag_log("native map", 3, (const GeV3 *)(map_buf + b->vo), b->nv);
                 if (nat_3d2d_on()) map_draw_2d(b);    /* gs_3d2d: through the CPU projection (the real GE's 3D) */
                 else if (band[i])
                     sceGuDrawArray(GU_TRIANGLES, GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_32BITF | GU_INDEX_16BIT |
