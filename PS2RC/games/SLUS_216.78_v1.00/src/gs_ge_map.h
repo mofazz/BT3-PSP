@@ -164,6 +164,20 @@ static void map_draw_cut(const MapBatch *b)
     map_st_cut++;
 }
 
+/* gs_3d2d=1: a batch's triangles expanded and sent through nat_draw3 (CPU cut, projection, 2D draw) */
+static GeTex map_gt;
+static void map_draw_2d(const MapBatch *b)
+{
+    static GeV3 tv[300];                              /* (small: 7 KB of static memory) */
+    const uint16_t *ix = (const uint16_t *)(map_buf + b->io);
+    const GeV3 *vx = (const GeV3 *)(map_buf + b->vo);
+    for (uint32_t s = 0; s + 3 <= b->ni; s += 300) {
+        const uint32_t nn = (b->ni - s < 300 ? b->ni - s : 300) / 3 * 3;
+        for (uint32_t q = 0; q < nn; q++) tv[q] = vx[ix[s + q]];
+        nat_draw3(3, tv, nn);
+    }
+}
+
 static void map_draw(void)
 {
     /* the game's state for the stage (target, depth test, scissor) and its projection, without a texture */
@@ -264,9 +278,12 @@ static void map_draw(void)
                         sceGuTexMode(GU_PSM_T8, 0, 0, 0);
                         sceGuTexImage(0, (int)x->w, (int)x->h, (int)x->w, map_buf + x->px);
                         sceGuTexFlush();
-                    } else sceGuDisable(GU_TEXTURE_2D);
+                        map_gt.w = (uint16_t)x->w; map_gt.h = (uint16_t)x->h;   /* (gs_3d2d: texel units) */
+                        nat_tex = &map_gt;
+                    } else { sceGuDisable(GU_TEXTURE_2D); nat_tex = NULL; }
                 }
-                if (band[i])
+                if (nat_3d2d_on()) map_draw_2d(b);    /* gs_3d2d: through the CPU projection (the real GE's 3D) */
+                else if (band[i])
                     sceGuDrawArray(GU_TRIANGLES, GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_32BITF | GU_INDEX_16BIT |
                                    GU_TRANSFORM_3D, (int)b->ni, map_buf + b->io, map_buf + b->vo);
                 else map_draw_cut(b);

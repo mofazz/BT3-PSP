@@ -119,6 +119,7 @@ stage:
 | `demo_direct=1` | Start straight in the demo battle |
 | `demo_skip=N` / `demo_stage=N` | Another demo pairing / force stage N |
 | `eft_off=bits` | Turn effect groups off (cost tests): 1 particles, 2 dust, 4 scrolling sky, 8 water, 16 stage, 64 fighters, 128 HUD… |
+| `gs_3d2d=1` | **Real PSP-3000**: every 3D triangle (stage, fighters, native map) projected by the CPU and drawn as 2D, because the console's GE drops the 3D batches PPSSPP draws (black or broken stage). Much slower; `gs_3d2d_split=0` skips cutting big triangles (faster, more texture warping). From kit 0.0.6–0.0.8 by giogitsuspended-sketch |
 | `pace_maxlag_ms=67` | The most lag the game tries to win back by running faster (0 = no limit) |
 | `gs_frameskip=-1` | Automatic frame skip (off by default: it looks choppy and the game logic caps it at ~0.75x) |
 | `prof=1` | Profiler: a summary of where the time goes in `session.log` |
