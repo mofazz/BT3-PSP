@@ -89,10 +89,13 @@ stage 4) live in `herramientas/mapas/stage_rules.json`.
 ### Tuning each map by hand: the LOD tuner
 
 ```
-bash herramientas/ajuste_lod/abrir.sh          # opens http://127.0.0.1:8765 (local only)
+python -m pip install PySide6 PyOpenGL
+bash herramientas/ajuste_lod/abrir.sh          # the desktop window (ajustador.py)
+bash herramientas/ajuste_lod/abrir.sh web      # the same tool as a local page, http://127.0.0.1:8765
 ```
 
-A page with a 3D viewer, per stage:
+A window with an OpenGL 3D viewer (left drag orbits, right drag pans, the wheel zooms, F frames the stage), per
+stage:
 
 - **Preparar estructura**: exports the stage's dump and builds the cells, blocks and kinds in Blender (again after
   changing a rule).
