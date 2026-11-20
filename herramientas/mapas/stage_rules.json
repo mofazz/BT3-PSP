@@ -2,11 +2,31 @@
  "_": "per-stage settings for stage_process.sh: lod_args / meshopt_args are extra key=value options of stage_lod.py / stage_meshopt.py; reglas: a loose part whose box (Blender coordinates: x0 x1 y0 y1, Z up) lies inside 'caja' (with at least min_tris triangles and at most max_dz high) becomes a kind of its own, reduced with lod = [r1, e1, r2, e2] (share of triangles, error; near / far) and never turned into a box. The first rule that matches wins.",
  "4": {
   "lod_args": "far=12000",
-  "meshopt_args": "suelo_r2=0.03 suelo_e2=0.2 arbol_r2=0.05 arbol_e2=0.2 edif_e2=0.06 otros_r2=0.01 otros_e2=1 casa_r2=0.35 casa_e2=0.04 plataforma_r2=0.03 plataforma_e2=0.05 gradas_r2=0.6 gradas_e2=0.02",
+  "meshopt_args": "suelo_e1=0 suelo_r2=0.1 suelo_e2=0 edif_e2=0.06 otros_r2=0.01 otros_e2=0.4 casa_r2=0.35 casa_e2=0.04 plataforma_e1=0 plataforma_r2=0.3 plataforma_e2=0 gradas_r2=0.6 gradas_e2=0.02",
   "reglas": [
    {"nombre": "casa", "caja": [-320, 320, -640, -400], "lod": [0.8, 0.005, 0.5, 0.02]},
    {"nombre": "plataforma", "caja": [-405, 405, -432, 405], "max_dz": 15, "lod": [0.3, 0.01, 0.1, 0.02]},
    {"nombre": "gradas", "caja": [-725, 725, -405, 725], "min_tris": 1000, "lod": [0.95, 0.002, 0.8, 0.01]}
-  ]
+  ],
+  "elegida": "v004"
+ },
+ "1": {
+  "meshopt_args": "suelo_r1=0.05 suelo_e1=0 suelo_r2=0.05 suelo_e2=0.02 edif_r1=0 edif_e1=0.13 arbol_r1=0 arbol_e1=0 arbol_r2=0 arbol_e2=0 otros_r1=0 otros_e1=0.13 otros_r2=0.02 otros_e2=0",
+  "elegida": "v028"
+ },
+ "2": {
+  "reglas": [
+   {"nombre": "callampa", "caja": [-319.12725830078125, -279.0596008300781, 158.41217041015625, 196.72122192382812], "lod": [0.8, 0.055, 0.6, 0.03], "min_tris": 189}
+  ],
+  "meshopt_args": "suelo_e1=0 suelo_r2=0.2 suelo_e2=0.001 edif_r1=0.1 edif_e1=0.005 edif_r2=0.05 edif_e2=0.001 arbol_r1=0.05 arbol_e1=0.02 otros_r1=0.05 otros_e1=0.02",
+  "elegida": "v005"
+ },
+ "3": {
+  "meshopt_args": "suelo_r2=0.3 suelo_e2=0.03 edif_r2=0.3 edif_e2=0.05 arbol_r2=0.2 arbol_e2=0.06 otros_r2=0.1 otros_e2=0.1",
+  "elegida": "v007"
+ },
+ "5": {
+  "meshopt_args": "edif_e1=0.02 edif_e2=0.05 arbol_r1=0.2 arbol_e1=0.001 arbol_r2=0.1 arbol_e2=0.05",
+  "elegida": "v002"
  }
 }
